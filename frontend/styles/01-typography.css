@@ -1,0 +1,84 @@
+:root {
+    --accent: #1c90e3;
+    --bg: #fff;
+    --bg-offset: #f8f8f6;
+    --border: rgb(0 0 0 / 10%);
+    --border-strong: rgb(0 0 0 / 30%);
+    --danger: #b3261e;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
+    --text-primary: #111;
+    --text-secondary: #555;
+    --text-tertiary: #727272;
+}
+
+h1 {
+    font-size: 3.5rem;
+    font-weight: 700;
+    letter-spacing: -.03em;
+    line-height: 1.08;
+    margin: 0 0 24px;
+    text-wrap: balance;
+
+    @media (max-width: 960px) {
+        font-size: 2.5rem;
+    }
+
+    @media (max-width: 600px) {
+        font-size: 2rem;
+    }
+}
+
+h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -.02em;
+    line-height: 1.2;
+    margin: 0 0 12px;
+}
+
+h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    line-height: 1.3;
+    margin: 0 0 12px;
+}
+
+.mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.eyebrow {
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: .7rem;
+    font-weight: 500;
+    letter-spacing: .12em;
+    margin: 0 0 16px;
+    text-transform: uppercase;
+}
+
+.eyebrow .mono {
+    text-transform: none;
+}
+
+.lede {
+    color: var(--text-secondary);
+    font-size: 1.15rem;
+    line-height: 1.7;
+    margin: 0 0 32px;
+    max-width: 420px;
+}
+
+.dates {
+    color: var(--text-tertiary);
+    font-size: .85rem;
+    margin: 0 0 8px;
+}
+
+.frame-hint {
+    color: var(--text-tertiary);
+    font-size: .8rem;
+}

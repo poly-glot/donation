@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Charity Raffle admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23fff'%3ER%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles/01-typography.css">
+    <link rel="stylesheet" href="styles/02-forms.css">
+    <link rel="stylesheet" href="styles/03-prizes.css">
+    <link rel="stylesheet" href="styles/04-layout.css">
+    <link rel="stylesheet" href="styles/05-journey.css">
+    <link rel="stylesheet" href="styles/06-buttons.css">
+    <link rel="stylesheet" href="styles/07-feedback.css">
+    <link rel="stylesheet" href="styles/08-admin.css">
+    <script type="module" src="admin.js"></script>
+</head>
+<body>
+<header class="site-header">
+    <div class="wrap bar">
+        <span class="brand">Charity Raffle admin</span>
+        <span class="bar-right"><span class="raffle-name"><a class="link" href="./">The public page</a></span><button type="button" class="link" id="admin-signout" hidden>Sign out</button><span class="mono">Licence 123456</span></span>
+    </div>
+</header>
+
+<main>
+    <p id="admin-loading" class="wrap status">Loading the console…</p>
+    <p id="admin-error" class="wrap notice notice-error" role="alert" hidden></p>
+
+    <section id="admin-signin" class="hero" hidden>
+        <div class="wrap hero-grid">
+            <div class="hero-text">
+                <p class="eyebrow">Admin console</p>
+                <h1>Sign in to continue.</h1>
+                <p class="lede">This console reads and changes the gambling ledger and the personal data of everyone who has entered. It is open only to the charity's named administrators.</p>
+                <button type="button" class="cta" id="admin-signin-start">Sign in</button>
+            </div>
+        </div>
+    </section>
+
+<div class="journey" id="admin-console" hidden>
+    <nav class="wrap steps-nav" aria-label="Admin sections" id="admin-nav">
+        <ol class="steps">
+            <li><a class="step-tab" href="#supporter">Supporters</a></li>
+            <li><a class="step-tab" href="#raffles">Raffles and prizes</a></li>
+            <li><a class="step-tab" href="#subscriptions">Subscriptions</a></li>
+        </ol>
+    </nav>
+
+    <nav class="wrap subnav" aria-label="This raffle" id="admin-subnav" hidden>
+        <ol>
+            <li><a data-route="raffle" href="#raffles">Setup and prizes</a></li>
+            <li><a data-route="ledger" href="#raffles">Ticket ledger</a></li>
+            <li><a data-route="draw" href="#raffles">Draw and winners</a></li>
+        </ol>
+    </nav>
+
+    <section id="admin-supporter" data-panel tabindex="-1" hidden>
+        <div class="wrap step-grid">
+            <div class="step-head">
+                <p class="eyebrow">Supporters</p>
+                <h2>Find a supporter</h2>
+                <p>By the email they gave at checkout, by an order number from their confirmation, or by a ticket number. This is the only screen that shows personal data.</p>
+            </div>
+            <div class="frame">
+                <div class="frame-bar"><span class="frame-title">Lookup</span></div>
+                <div class="frame-body">
+                    <form class="lookup" id="admin-lookup-email">
+                        <label class="field"><span class="field-text">Email</span><input type="email" name="email" required autocomplete="off"></label>
+                        <button type="submit" class="cta">Open dossier</button>
+                    </form>
+                    <form class="lookup" id="admin-lookup-order">
+                        <label class="field"><span class="field-text">Order number</span><input class="mono" name="orderId" required autocomplete="off"></label>
+                        <button type="submit" class="cta">Open order</button>
+                    </form>
+                    <form class="lookup" id="admin-lookup-ticket">
+                        <label class="field"><span class="field-text">Raffle</span><input class="mono" name="raffleId" required autocomplete="off"></label>
+                        <label class="field"><span class="field-text">Ticket number</span><input class="mono" type="number" name="ticketNumber" min="1" required></label>
+                        <button type="submit" class="cta">Find the holder</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div id="admin-dossier" hidden>
+            <div class="band">
+                <div class="wrap step-grid">
+                    <dl class="summary facts" id="admin-dossier-profile"></dl>
+                    <dl class="summary facts" id="admin-dossier-consent"></dl>
+                </div>
+            </div>
+
+            <div class="wrap panel">
+                <h3>Orders</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th>Order</th><th>Raffle</th><th>Status</th><th class="num">Tickets</th><th class="num">Ticket money</th><th class="num">Donation</th><th class="num">Charged</th><th>Placed</th></tr>
+                        </thead>
+                        <tbody id="admin-dossier-orders"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="wrap panel">
+                <h3>Ticket numbers held</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th>Raffle</th><th class="num">From</th><th class="num">To</th><th class="num">Tickets</th><th>Allocated</th></tr>
+                        </thead>
+                        <tbody id="admin-dossier-entries"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="wrap panel">
+                <h3>Subscriptions</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th>Subscription</th><th class="num">Tickets a raffle</th><th>Eligible from</th><th>Status</th></tr>
+                        </thead>
+                        <tbody id="admin-dossier-subscriptions"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="wrap panel">
+                <h3>Prizes won</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th>Raffle</th><th class="num">Seq</th><th class="num">Prize</th><th class="num">Ticket</th><th>Status</th></tr>
+                        </thead>
+                        <tbody id="admin-dossier-wins"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="band" id="admin-erase" hidden>
+                <div class="wrap step-grid">
+                    <div class="step-head">
+                        <h3>Erase this supporter</h3>
+                        <p>Erasure rewrites the name, email, telephone, address and Stripe customer with placeholders, keeps only the year of birth, drops the email index and cancels any live subscription. Orders, ticket numbers and wins stay in the gambling ledger. It is refused while a prize is still pending or notified.</p>
+                    </div>
+                    <form id="admin-erase-form">
+                        <div class="fields">
+                            <label class="field wide"><span class="field-text">Type the entrant id to confirm</span><input class="mono" name="confirm" id="admin-erase-confirm" required autocomplete="off"></label>
+                        </div>
+                        <div class="step-nav">
+                            <button type="submit" class="cta cta-danger">Erase the personal data</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="admin-order" data-panel tabindex="-1" hidden>
+        <div class="wrap step-grid">
+            <div>
+                <div class="step-head">
+                    <p class="eyebrow">Order</p>
+                    <h2>What was bought</h2>
+                    <p>Ticket money and donation money are recorded apart; only the donation carries Gift Aid. Ticket numbers are allocated when the payment settles, never when the order is placed.</p>
+                </div>
+                <p class="dates">Supporter <a class="link" id="admin-order-supporter" href="#supporter"></a></p>
+            </div>
+            <dl class="summary facts" id="admin-order-facts"></dl>
+        </div>
+    </section>
+
+    <section id="admin-raffles" data-panel tabindex="-1" hidden>
+        <div class="wrap panel">
+            <h2>Every raffle</h2>
+            <p class="dates"><a class="link" href="#raffle">Set up a new raffle</a></p>
+            <div class="records">
+                <table>
+                    <thead>
+                        <tr><th>Raffle</th><th>Name</th><th>Status</th><th>Opens</th><th>Closes</th><th>Draw</th><th class="num">Sold</th><th class="num">Ticket money</th><th class="num">Donations</th></tr>
+                    </thead>
+                    <tbody id="admin-raffles-rows"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section id="admin-raffle" data-panel tabindex="-1" hidden>
+        <div class="hero">
+            <div class="wrap hero-grid">
+                <div class="hero-text">
+                    <p class="eyebrow">Raffle · <span id="admin-raffle-state"></span></p>
+                    <h1 id="admin-raffle-title"></h1>
+                    <p class="lede" id="admin-raffle-lede"></p>
+                </div>
+                <div class="frame" id="admin-raffle-record" hidden>
+                    <div class="frame-bar"><span class="frame-title">Counters</span></div>
+                    <div class="frame-body">
+                        <dl class="summary facts" id="admin-raffle-counters"></dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="wrap step-grid">
+            <div class="step-head">
+                <h2>Setup</h2>
+                <p>Dates are UTC and must run opens before closes, closes on or before the draw, and the draw on or before the results. The ticket price cannot change once a ticket is sold, and the cap cannot drop below the number already sold.</p>
+            </div>
+            <form id="admin-raffle-form">
+                <div class="fields">
+                    <label class="field"><span class="field-text">Raffle id</span><input class="mono" name="raffleId" pattern="[A-Za-z0-9_-]+" required autocomplete="off"></label>
+                    <label class="field"><span class="field-text">Name</span><input name="name" required autocomplete="off"></label>
+                    <label class="field"><span class="field-text">Ticket price in pence</span><input class="mono" type="number" name="ticketPricePence" min="1" value="100" required></label>
+                    <label class="field"><span class="field-text">Most tickets per order</span><input class="mono" type="number" name="maxTicketsPerOrder" min="1" value="20" required></label>
+                    <label class="field"><span class="field-text">Tickets available</span><input class="mono" type="number" name="maxTickets" min="1" value="5000000" required></label>
+                    <label class="field"><span class="field-text">Opens at, UTC</span><input type="datetime-local" name="opensAt" required></label>
+                    <label class="field"><span class="field-text">Closes at, UTC</span><input type="datetime-local" name="closesAt" required></label>
+                    <label class="field"><span class="field-text">Draw at, UTC</span><input type="datetime-local" name="drawAt" required></label>
+                    <label class="field"><span class="field-text">Results at, UTC</span><input type="datetime-local" name="resultsAt" required></label>
+                </div>
+                <div class="step-nav">
+                    <button type="submit" class="cta" id="admin-raffle-submit">Save changes</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="band" id="admin-raffle-offer" hidden>
+            <div class="wrap panel">
+                <h3>Prize tiers</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th>Rank</th><th>Name</th><th class="num">Each</th><th class="num">How many</th></tr>
+                        </thead>
+                        <tbody id="admin-prizes-rows"></tbody>
+                    </table>
+                </div>
+                <form class="lookup" id="admin-prize-form">
+                    <label class="field"><span class="field-text">Rank</span><input class="mono" type="number" name="rank" min="1" required></label>
+                    <label class="field"><span class="field-text">Name</span><input name="name" required autocomplete="off"></label>
+                    <label class="field"><span class="field-text">Amount in pence</span><input class="mono" type="number" name="amountPence" min="1" required></label>
+                    <label class="field"><span class="field-text">How many</span><input class="mono" type="number" name="quantity" min="1" required></label>
+                    <button type="submit" class="cta" name="intent" value="save">Save the tier</button>
+                    <button type="submit" class="cta cta-danger" name="intent" value="remove" formnovalidate>Remove the tier</button>
+                </form>
+                <p class="dates">Saving a rank replaces whatever tier held it. Pick a rank in the table to load it. Tiers are frozen once the raffle is drawn.</p>
+            </div>
+        </div>
+    </section>
+
+    <section id="admin-draw" data-panel tabindex="-1" hidden>
+        <div class="wrap step-grid">
+            <div>
+                <div class="step-head">
+                    <p class="eyebrow">Draw · <span id="admin-draw-state"></span></p>
+                    <h2 id="admin-draw-title"></h2>
+                    <p>The draw is claimed once and recorded with who conducted it and who witnessed it. Numbers come from operating-system entropy; refunded tickets and tickets that have already won are skipped.</p>
+                </div>
+                <dl class="summary facts" id="admin-draw-facts"></dl>
+            </div>
+            <div>
+                <div class="frame" id="admin-draw-run" hidden>
+                    <div class="frame-bar"><span class="frame-title">Run the draw</span></div>
+                    <div class="frame-body">
+                        <form id="admin-draw-form">
+                            <div class="fields">
+                                <label class="field"><span class="field-text">Conducted by</span><input name="conductedBy" required autocomplete="off"></label>
+                                <label class="field"><span class="field-text">Witnessed by <em>optional</em></span><input name="witnessedBy" autocomplete="off"></label>
+                                <label class="field wide"><span class="field-text">Type the raffle id to confirm</span><input class="mono" name="confirm" id="admin-draw-confirm" required autocomplete="off"></label>
+                            </div>
+                            <div class="step-nav">
+                                <button type="submit" class="cta cta-danger">Run the draw</button>
+                            </div>
+                        </form>
+                        <p class="frame-note">A second run resumes an interrupted draw from the winners already recorded. It never re-picks a prize that has been awarded.</p>
+                    </div>
+                </div>
+                <p class="dates" id="admin-draw-closed" hidden></p>
+            </div>
+        </div>
+
+        <div class="band">
+            <div class="wrap panel">
+                <h3>Winners</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th class="num">Seq</th><th class="num">Rank</th><th class="num">Prize</th><th class="num">Ticket</th><th>Order</th><th>Supporter</th><th>Status</th><th>Move to</th></tr>
+                        </thead>
+                        <tbody id="admin-winners-rows"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="admin-ledger" data-panel tabindex="-1" hidden>
+        <div class="wrap panel">
+            <h2 id="admin-ledger-title"></h2>
+            <p class="dates" id="admin-ledger-coverage"></p>
+            <div class="records">
+                <table>
+                    <thead>
+                        <tr><th class="num">From</th><th class="num">To</th><th class="num">Tickets</th><th>Order</th><th>Supporter</th><th>Allocated</th></tr>
+                    </thead>
+                    <tbody id="admin-ledger-rows"></tbody>
+                </table>
+            </div>
+            <div class="step-nav">
+                <button type="button" class="cta" id="admin-ledger-more" hidden>Load the next 50</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="admin-subscriptions" data-panel tabindex="-1" hidden>
+        <div class="wrap step-grid">
+            <div class="step-head">
+                <p class="eyebrow">Subscriptions</p>
+                <h2>The VIP register</h2>
+                <p>Subscribers are charged for ten tickets when each raffle opens. A declined card moves them to past due; cancellations are taken by phone and recorded here.</p>
+            </div>
+            <div>
+                <form id="admin-subscriptions-filter">
+                    <fieldset class="pick-group">
+                        <legend class="field-label">Which subscribers</legend>
+                        <div class="picks picks-3">
+                            <label class="pick"><input type="radio" name="status" value="ACTIVE" checked><span class="pick-face pick-text">Active</span></label>
+                            <label class="pick"><input type="radio" name="status" value="PAST_DUE"><span class="pick-face pick-text">Past due</span></label>
+                            <label class="pick"><input type="radio" name="status" value="CANCELLED"><span class="pick-face pick-text">Cancelled</span></label>
+                        </div>
+                    </fieldset>
+                </form>
+                <form class="lookup" id="admin-cancel-form">
+                    <label class="field"><span class="field-text">Cancel a subscription</span><input class="mono" name="subscriptionId" required autocomplete="off"></label>
+                    <button type="submit" class="cta cta-danger">Cancel it</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="band">
+            <div class="wrap panel">
+                <h3>Subscribers</h3>
+                <div class="records">
+                    <table>
+                        <thead>
+                            <tr><th>Subscription</th><th>Supporter</th><th class="num">Tickets</th><th>Eligible from</th><th>Signed up</th><th>Status</th></tr>
+                        </thead>
+                        <tbody id="admin-subscriptions-rows"></tbody>
+                    </table>
+                </div>
+                <div class="step-nav">
+                    <button type="button" class="cta" id="admin-subscriptions-more" hidden>Load the next 50</button>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+</main>
+
+<footer class="site-footer">
+    <div class="wrap">
+        <p>Charity Raffle is a society lottery promoted for the charity, registered charity number 000000, licensed and regulated by the Gambling Commission under account number 123456. Responsible person: the charity's Director of Fundraising.</p>
+        <p class="footer-links"><a href="https://www.gamblingcommission.gov.uk">Gambling Commission</a><a href="https://www.begambleaware.org">BeGambleAware</a><span>This console shows personal data. Close it when you are done.</span></p>
+    </div>
+</footer>
+</body>
+</html>

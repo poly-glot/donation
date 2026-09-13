@@ -1,0 +1,15 @@
+.status {
+    color: var(--text-secondary);
+    padding-top: 64px;
+}
+
+.notice {
+    border-radius: 2px;
+    margin: 24px auto 0;
+    padding: 12px 16px;
+}
+
+.notice-error {
+    border: 1px solid var(--danger);
+    color: var(--danger);
+}

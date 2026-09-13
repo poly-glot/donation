@@ -1,0 +1,61 @@
+%%{init: {'theme': 'base', 'look': 'classic', 'flowchart': {'defaultRenderer': 'elk', 'curve': 'linear', 'padding': 20, 'nodeSpacing': 72, 'rankSpacing': 60}, 'elk': {'mergeEdges': true, 'nodePlacementStrategy': 'NETWORK_SIMPLEX'}, 'themeVariables': {'primaryColor': '#ffffff', 'primaryTextColor': '#010101', 'primaryBorderColor': '#010101', 'lineColor': '#656565', 'secondaryColor': '#fafafa', 'tertiaryColor': '#ffffff', 'clusterBkg': '#fafafa', 'clusterBorder': '#dddddd', 'edgeLabelBackground': '#ffffff', 'fontFamily': 'Arial', 'fontSize': '14px'}, 'themeCSS': '.nodeLabel, .label, text { font-family: Roboto, Helvetica Neue, Arial, sans-serif !important; } .edgePath .path, .flowchart-link { stroke: #656565 !important; stroke-width: 1.2px !important; } .edgeLabel { color: #656565 !important; font-family: JetBrains Mono, SFMono-Regular, Menlo, monospace !important; font-size: 11px !important; letter-spacing: 0.04em; } .cluster-label { color: #6e6e6e !important; font-family: JetBrains Mono, SFMono-Regular, Menlo, monospace !important; font-size: 11px !important; letter-spacing: 0.12em; text-transform: uppercase; } .cluster rect { rx: 8px; ry: 8px; } .node rect { rx: 6px; ry: 6px; }'}}%%
+
+flowchart TB
+    Supporter["Supporter's browser\nRaffle site · pays through the Stripe Payment Element"]
+    Operator["Operator\nIAM credentials · aws lambda invoke"]
+    StripeEvents["Stripe webhooks\ncharge.succeeded · charge.refunded · payment_intent.payment_failed"]
+    StripeApi["Stripe API\napi.stripe.com · Customers · PaymentIntents · Refunds · Charges"]
+
+    subgraph AWS["AWS · eu-west-2 · always-free tier"]
+        subgraph Functions["Lambda · Rust 1.98 · arm64 · provided.al2023"]
+            Api["api\nfunction URL · GET /raffles/current · POST /raffles/…/orders"]
+            Webhook["stripe-webhook\nfunction URL · HMAC signature · gapless ticket allocation"]
+            Charge["subscription-charge\nhourly · off-session charge when a raffle opens"]
+            Reconcile["reconcile\ndaily 06:00 UTC · ledger, charges, subscribers"]
+            Canary["canary\nevery 5 minutes · probes the browse endpoint"]
+            Draw["draw-run\nadmin invoked · CSPRNG winners, resumable"]
+            Admin["admin\nadmin invoked · raffles, prizes, erasure"]
+        end
+        Events["EventBridge rules\nrate(5 minutes) · rate(1 hour) · cron 06:00 UTC"]
+        Table["DynamoDB raffle-prod\nsingle table · GSI1 · GSI2 · 25 provisioned units, always-free"]
+        Logs["CloudWatch Logs + Metrics\nJSON logs of all seven functions · EMF metrics · Http5xx filter"]
+        Alerts["SNS raffle-prod-alerts\n10 standard alarms · email subscription"]
+    end
+
+    Supporter -->|"HTTPS"| Api
+    StripeEvents -->|"signed POST"| Webhook
+    Api -->|"creates PaymentIntent"| StripeApi
+    Webhook -->|"refunds"| StripeApi
+    Charge -->|"off-session charge"| StripeApi
+    Reconcile -->|"lists charges"| StripeApi
+    Events -->|"rate(5 minutes)"| Canary
+    Events -->|"rate(1 hour)"| Charge
+    Events -->|"cron 06:00 UTC"| Reconcile
+    Canary -->|"GET /raffles/current"| Api
+    Operator -->|"invoke"| Admin
+    Operator -->|"invoke"| Draw
+    Api --> Table
+    Webhook -->|"allocation transaction"| Table
+    Charge --> Table
+    Reconcile --> Table
+    Draw --> Table
+    Admin --> Table
+    Logs -->|"10 alarms"| Alerts
+
+    style Supporter    fill:#f0f0f0,stroke:#6e6e6e,stroke-width:1px,color:#010101
+    style Operator     fill:#f0f0f0,stroke:#6e6e6e,stroke-width:1px,color:#010101
+    style StripeEvents fill:#f7f7f7,stroke:#b3b3b3,stroke-width:1px,color:#010101
+    style StripeApi    fill:#f7f7f7,stroke:#b3b3b3,stroke-width:1px,color:#010101
+    style Api          fill:#fef6e8,stroke:#f8a41d,stroke-width:1.5px,color:#010101
+    style Webhook      fill:#ffffff,stroke:#010101,stroke-width:1px,color:#010101
+    style Charge       fill:#ffffff,stroke:#010101,stroke-width:1px,color:#010101
+    style Reconcile    fill:#ffffff,stroke:#010101,stroke-width:1px,color:#010101
+    style Canary       fill:#ffffff,stroke:#010101,stroke-width:1px,color:#010101
+    style Draw         fill:#ffffff,stroke:#010101,stroke-width:1px,color:#010101
+    style Admin        fill:#ffffff,stroke:#010101,stroke-width:1px,color:#010101
+    style Events       fill:#f7f7f7,stroke:#b3b3b3,stroke-width:1px,color:#010101
+    style Table        fill:#f2f2f2,stroke:#656565,stroke-width:1px,color:#010101
+    style Logs         fill:#f7f7f7,stroke:#b3b3b3,stroke-width:1px,color:#010101
+    style Alerts       fill:#f7f7f7,stroke:#b3b3b3,stroke-width:1px,color:#010101
+    style AWS          fill:#fafafa,stroke:#dddddd,stroke-width:1px,color:#6e6e6e
+    style Functions    fill:#ffffff,stroke:#e5e6e6,stroke-width:1px,color:#6e6e6e

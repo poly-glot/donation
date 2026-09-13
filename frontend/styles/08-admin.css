@@ -1,0 +1,151 @@
+.cta-danger {
+    background: var(--danger);
+
+    &:hover {
+        background: color-mix(in srgb, var(--danger) 82%, black);
+    }
+}
+
+.facts {
+    max-width: none;
+}
+
+@scope (.facts) {
+    dd {
+        text-align: right;
+    }
+
+    dt {
+        flex-shrink: 0;
+    }
+
+    .summary-row {
+        gap: 24px;
+    }
+}
+
+.lookup {
+    align-items: end;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.lookup:not(:first-child) {
+    margin-top: 20px;
+}
+
+@scope (.lookup) {
+    .field {
+        flex: 1;
+        min-width: 160px;
+    }
+}
+
+.panel {
+    padding-block: 40px;
+}
+
+.picks-3 .pick-face {
+    aspect-ratio: auto;
+    padding: 16px 0;
+}
+
+.records {
+    border-top: 1px solid var(--border);
+    overflow-x: auto;
+}
+
+@scope (.records) {
+    table {
+        border-collapse: collapse;
+        font-size: .85rem;
+        min-width: 100%;
+        width: max-content;
+    }
+
+    th {
+        border-bottom: 1px solid var(--border);
+        color: var(--text-tertiary);
+        font-family: var(--font-mono);
+        font-size: .7rem;
+        font-weight: 500;
+        letter-spacing: .08em;
+        padding: 12px 24px 12px 0;
+        text-align: left;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
+
+    td {
+        border-bottom: 1px solid var(--border);
+        padding: 12px 24px 12px 0;
+        vertical-align: baseline;
+        white-space: nowrap;
+    }
+
+    button + button {
+        margin-left: 12px;
+    }
+
+    .num {
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+    }
+}
+
+.state {
+    font-family: var(--font-mono);
+    font-size: .7rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.state-alert {
+    color: var(--danger);
+}
+
+.subnav {
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+}
+
+@scope (.subnav) {
+    ol {
+        display: flex;
+        gap: 32px;
+        list-style: none;
+        margin: 0;
+        min-width: 100%;
+        padding: 0;
+        width: max-content;
+    }
+
+    a {
+        color: var(--text-secondary);
+        display: inline-block;
+        font-size: .75rem;
+        font-weight: 500;
+        letter-spacing: .06em;
+        padding: 14px 0;
+        text-decoration: none;
+        text-transform: uppercase;
+        white-space: nowrap;
+
+        &:focus-visible {
+            outline: 2px solid var(--text-primary);
+            outline-offset: 2px;
+        }
+
+        &:hover {
+            color: var(--text-primary);
+        }
+
+        &[aria-current] {
+            box-shadow: inset 0 -2px var(--text-primary);
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+    }
+}

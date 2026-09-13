@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Charity Raffle</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23fff'%3ER%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles/01-typography.css">
+    <link rel="stylesheet" href="styles/02-forms.css">
+    <link rel="stylesheet" href="styles/03-prizes.css">
+    <link rel="stylesheet" href="styles/04-layout.css">
+    <link rel="stylesheet" href="styles/05-journey.css">
+    <link rel="stylesheet" href="styles/06-buttons.css">
+    <link rel="stylesheet" href="styles/07-feedback.css">
+    <script src="https://js.stripe.com/v3/" defer></script>
+    <script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="site-header">
+    <div class="wrap bar">
+        <span class="brand">Charity Raffle</span>
+        <span class="bar-right"><span class="raffle-name" id="header-raffle"></span><span class="mono">Licence 123456</span></span>
+    </div>
+</header>
+
+<main>
+    <p id="loading" class="wrap status">Loading the raffle…</p>
+    <p id="error" class="wrap notice notice-error" role="alert" hidden></p>
+
+    <section id="closed" class="hero" hidden>
+        <div class="wrap hero-grid">
+            <div class="hero-text">
+                <p class="eyebrow">Ticket sales closed</p>
+                <h1>The raffle is closed for now.</h1>
+                <p class="lede" id="closed-copy"></p>
+            </div>
+        </div>
+    </section>
+
+    <form id="order" novalidate hidden>
+        <section class="hero">
+            <div class="wrap hero-grid">
+            <div class="hero-text">
+                <p class="eyebrow" id="raffle-status"></p>
+                <h1 id="raffle-title"></h1>
+                <p class="lede" id="raffle-lede"></p>
+            </div>
+
+            <div class="frame" id="picker">
+                <div class="frame-bar">
+                    <span class="frame-title">Play the raffle</span>
+                    <output class="mono" id="frame-total">£15.00</output>
+                </div>
+                <div class="frame-body">
+                    <fieldset class="pick-group">
+                        <legend class="field-label">How many £1 tickets?</legend>
+                        <div class="picks">
+                            <label class="pick"><input type="radio" name="tickets" value="15" checked><span class="pick-face">15</span></label>
+                            <label class="pick"><input type="radio" name="tickets" value="10"><span class="pick-face">10</span></label>
+                            <label class="pick"><input type="radio" name="tickets" value="5"><span class="pick-face">5</span></label>
+                            <label class="pick"><input type="radio" name="tickets" value="other"><span class="pick-face pick-text">Other</span></label>
+                        </div>
+                        <div class="other" id="tickets-other" hidden>
+                            <label class="field"><span>Number of tickets, up to 20</span><input type="number" name="ticketsOther" min="1" max="20" value="1" disabled></label>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="pick-group">
+                        <legend class="field-label">Add a donation</legend>
+                        <div class="picks picks-5">
+                            <label class="pick"><input type="radio" name="donation" value="500"><span class="pick-face">£5</span></label>
+                            <label class="pick"><input type="radio" name="donation" value="1000"><span class="pick-face">£10</span></label>
+                            <label class="pick"><input type="radio" name="donation" value="1500"><span class="pick-face">£15</span></label>
+                            <label class="pick"><input type="radio" name="donation" value="other"><span class="pick-face pick-text">Other</span></label>
+                            <label class="pick"><input type="radio" name="donation" value="0" checked><span class="pick-face pick-text">None</span></label>
+                        </div>
+                        <div class="other" id="donation-other" hidden>
+                            <label class="field"><span>Donation in pounds</span><input type="number" name="donationOther" min="1" max="10000" step="1" value="20" disabled></label>
+                        </div>
+                    </fieldset>
+
+                    <p class="frame-note">Entrants must be 18 or over and resident in Great Britain. Payment is by debit card only.</p>
+                </div>
+                <div class="frame-foot">
+                    <button type="button" class="cta" id="start">Continue</button>
+                    <span class="frame-hint">Your details come next</span>
+                </div>
+            </div>
+            </div>
+        </section>
+
+        <div class="journey" id="journey" hidden>
+            <nav class="wrap steps-nav" aria-label="Order steps">
+                <ol class="steps">
+                    <li><button type="button" class="step-tab" aria-current="step">01 · Gift Aid</button></li>
+                    <li><button type="button" class="step-tab" disabled>02 · Your details</button></li>
+                    <li><button type="button" class="step-tab" disabled>03 · Address</button></li>
+                    <li><button type="button" class="step-tab" disabled>04 · Keep in touch</button></li>
+                    <li><button type="button" class="step-tab" disabled>05 · VIP subscription</button></li>
+                    <li><button type="button" class="step-tab" disabled>06 · Review</button></li>
+                </ol>
+            </nav>
+
+        <section class="step" data-panel tabindex="-1">
+            <div class="wrap step-grid">
+                <div class="step-head">
+                    <h2 id="gift-aid">Boost your donation by 25%</h2>
+                    <p>If you pay UK tax, the charity can reclaim 25p on every £1 you donate, at no cost to you. Gift Aid applies to the donation only, never to raffle tickets.</p>
+                </div>
+                <div>
+                    <fieldset class="choice" aria-labelledby="gift-aid">
+                        <label class="option"><input type="radio" name="giftAid" value="yes"><span class="option-text"><b>Yes</b>, I am a UK taxpayer and want Gift Aid claimed on all donations I make today, have made in the past four years and make in future. I understand that if I pay less Income Tax and Capital Gains Tax than the Gift Aid claimed on all my donations in a tax year, it is my responsibility to pay any difference.</span></label>
+                        <label class="option"><input type="radio" name="giftAid" value="no" checked><span class="option-text"><b>No</b>, I am not a UK taxpayer, or do not want Gift Aid claimed.</span></label>
+                    </fieldset>
+                    <div class="step-nav">
+                        <button type="button" class="cta" data-next>Next</button>
+                        <button type="button" class="link" data-back>Back</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="step" data-panel tabindex="-1">
+            <div class="wrap step-grid">
+                <div class="step-head">
+                    <h2>Who is entering</h2>
+                    <p>Tickets are issued to the person named here. You must be 18 or over to enter.</p>
+                </div>
+                <div>
+                    <div class="fields">
+                        <label class="field short"><span class="field-text">Title</span><input name="title" required autocomplete="honorific-prefix" placeholder="Ms"></label>
+                        <label class="field"><span class="field-text">First name</span><input name="firstName" required autocomplete="given-name"></label>
+                        <label class="field"><span class="field-text">Last name</span><input name="lastName" required autocomplete="family-name"></label>
+                        <label class="field"><span class="field-text">Email</span><input type="email" name="email" required autocomplete="email"></label>
+                        <label class="field"><span class="field-text">Telephone <em>optional</em></span><input type="tel" name="telephone" autocomplete="tel"></label>
+                        <label class="field"><span class="field-text">Date of birth</span><input type="date" name="dateOfBirth" required autocomplete="bday"></label>
+                    </div>
+                    <div class="step-nav">
+                        <button type="button" class="cta" data-next>Next</button>
+                        <button type="button" class="link" data-back>Back</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="step" data-panel tabindex="-1">
+            <div class="wrap step-grid">
+                <div class="step-head">
+                    <h2>Where you live</h2>
+                    <p>The licence covers Great Britain: England, Scotland and Wales. Northern Ireland, the Channel Islands and the Isle of Man are outside it.</p>
+                </div>
+                <div>
+                    <div class="fields">
+                        <label class="field wide"><span class="field-text">Address line 1</span><input name="line1" required autocomplete="address-line1"></label>
+                        <label class="field wide"><span class="field-text">Address line 2 <em>optional</em></span><input name="line2" autocomplete="address-line2"></label>
+                        <label class="field"><span class="field-text">Town</span><input name="town" required autocomplete="address-level2"></label>
+                        <label class="field"><span class="field-text">Postcode</span><input name="postcode" required autocomplete="postal-code" class="mono"></label>
+                    </div>
+                    <div class="step-nav">
+                        <button type="button" class="cta" data-next>Next</button>
+                        <button type="button" class="link" data-back>Back</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="step" data-panel tabindex="-1">
+            <div class="wrap step-grid">
+                <div class="step-head">
+                    <h2>Hearing from the charity</h2>
+                    <p>Stories from the people your ticket supports, and news of the next raffle. Change your mind at any time.</p>
+                </div>
+                <div>
+                    <div class="consent">
+                        <fieldset class="consent-row"><legend>Email</legend><label class="consent-option"><input type="radio" name="marketingEmail" value="yes"><span>Yes</span></label><label class="consent-option"><input type="radio" name="marketingEmail" value="no" checked><span>No</span></label></fieldset>
+                        <fieldset class="consent-row"><legend>Post</legend><label class="consent-option"><input type="radio" name="marketingPost" value="yes"><span>Yes</span></label><label class="consent-option"><input type="radio" name="marketingPost" value="no" checked><span>No</span></label></fieldset>
+                    </div>
+                    <div class="step-nav">
+                        <button type="button" class="cta" data-next>Next</button>
+                        <button type="button" class="link" data-back>Back</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="step" data-panel tabindex="-1">
+            <div class="wrap step-grid">
+                <div class="step-head">
+                    <h2>Enter every raffle</h2>
+                    <p>Subscribers get 10 tickets in each future raffle, charged to this card when the raffle opens, starting from the next one, not this draw. Cancel any time by phone.</p>
+                </div>
+                <div>
+                    <label class="option"><input type="checkbox" name="subscribe"><span class="option-text"><b>Yes</b>, allocate me 10 tickets in every future raffle and save my card for it.</span></label>
+                    <div class="step-nav">
+                        <button type="button" class="cta" data-next>Next</button>
+                        <button type="button" class="link" data-back>Back</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="band" data-panel tabindex="-1">
+            <div class="wrap review">
+                <dl class="summary">
+                    <div class="summary-row"><dt>Tickets <button type="button" class="link" data-picker>Change</button></dt><dd class="mono" id="sum-tickets">15 × £1</dd></div>
+                    <div class="summary-row"><dt>Donation</dt><dd class="mono" id="sum-donation">£0.00</dd></div>
+                    <div class="summary-row total"><dt>Total by debit card</dt><dd class="mono" id="total">£15.00</dd></div>
+                </dl>
+                <div class="review-action">
+                    <div class="step-nav">
+                        <button type="submit" class="cta" id="continue">Continue to payment</button>
+                        <button type="button" class="link" data-back>Back</button>
+                    </div>
+                    <p class="frame-hint">You pay on the next screen. Nothing is charged yet.</p>
+                    <p id="order-error" class="notice notice-error" role="alert" hidden></p>
+                </div>
+            </div>
+        </section>
+        </div>
+
+        <section class="step">
+            <div class="wrap step-grid">
+                <div class="step-head">
+                    <p class="eyebrow">The prizes</p>
+                    <h2 id="prizes-title"></h2>
+                    <p id="raffle-dates"></p>
+                </div>
+                <ol class="prizes" id="prizes"></ol>
+            </div>
+        </section>
+    </form>
+
+    <section id="payment" class="hero" hidden>
+        <div class="wrap hero-grid">
+            <div class="hero-text">
+                <p class="eyebrow">Payment</p>
+                <h1>Pay by debit card.</h1>
+                <p class="lede" id="payment-summary"></p>
+                <p class="dates">Order <span class="mono" id="payment-order"></span></p>
+                <p class="dates" id="test-cards" hidden>Test debit card 4000 0566 5566 5556, any future expiry, CVC and postcode. 4242 4242 4242 4242 is a credit card and is refunded.</p>
+            </div>
+            <div class="frame">
+                <div class="frame-bar"><span class="frame-title">Card details</span><output class="mono" id="payment-total"></output></div>
+                <div class="frame-body">
+                    <div class="payment-mount" id="payment-element"></div>
+                    <p id="payment-error" class="notice notice-error" role="alert" hidden></p>
+                </div>
+                <div class="frame-foot">
+                    <button type="button" class="cta" id="pay">Pay</button>
+                    <span class="frame-hint">Secured by Stripe</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="done" class="hero" hidden>
+        <div class="wrap hero-grid">
+            <div class="hero-text">
+                <p class="eyebrow">Order <span class="mono" id="done-order"></span></p>
+                <h1 id="done-title">Payment received.</h1>
+                <p class="lede" id="done-tickets">Allocating your ticket numbers…</p>
+                <p><a class="link" href="./">Back to the raffle</a></p>
+            </div>
+        </div>
+    </section>
+</main>
+
+<footer class="site-footer">
+    <div class="wrap">
+        <p>Charity Raffle is a society lottery promoted for the charity, registered charity number 000000, licensed and regulated by the Gambling Commission under account number 123456. Responsible person: the charity's Director of Fundraising.</p>
+        <p class="footer-links"><a href="https://www.gamblingcommission.gov.uk">Gambling Commission</a><a href="https://www.begambleaware.org">BeGambleAware</a><span>Tickets are not for sale to anyone under 18 or outside Great Britain.</span></p>
+    </div>
+</footer>
+</body>
+</html>

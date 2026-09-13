@@ -1,0 +1,45 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sleep infinity
+    depends_on:
+      cognito:
+        condition: service_started
+      dynamodb:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb:8000
+      AWS_REGION: eu-west-2
+      AWS_SECRET_ACCESS_KEY: local
+      CARGO_TARGET_DIR: /home/vscode/cargo-target
+      COGNITO_ENDPOINT: http://cognito:9229
+      TABLE_NAME: raffle-local
+    ports:
+      - "3000:3000"
+      - "9000:9000"
+    volumes:
+      - ..:/workspaces/donation:cached
+      - cargo-target:/home/vscode/cargo-target
+
+  cognito:
+    image: jagregory/cognito-local:5.3.0
+    ports:
+      - "9229:9229"
+
+  dynamodb:
+    command: -jar DynamoDBLocal.jar -sharedDb -inMemory
+    expose:
+      - "8000"
+    healthcheck:
+      interval: 5s
+      retries: 10
+      start_period: 5s
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000 || [ $$? -eq 22 ]"]
+      timeout: 3s
+    image: amazon/dynamodb-local:latest
+
+volumes:
+  cargo-target:

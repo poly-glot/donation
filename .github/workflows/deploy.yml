@@ -1,0 +1,58 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy
+
+env:
+  APP: donation
+  AWS_REGION: eu-west-2
+  FUNCTIONS: admin api canary draw-run reconcile stripe-webhook subscription-charge
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-24.04-arm
+    container: amazonlinux:2023
+
+    steps:
+      - name: Install the build tools
+        run: dnf install -y --setopt=install_weak_deps=False awscli-2 cmake gcc git gzip make tar unzip zip
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the functions
+        run: cargo build --release --locked
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+
+      - name: Push function code
+        run: |
+          for f in $FUNCTIONS; do
+            cp "target/release/$f" bootstrap && zip -q "$f.zip" bootstrap
+            aws lambda update-function-code --function-name "$APP-$f" --zip-file "fileb://$f.zip" --output text --query LastUpdateStatus
+          done
+
+      - name: Publish the frontend
+        run: |
+          printf 'export default {\n    cognito: {\n        clientId: "%s",\n        domain: "%s",\n    },\n    stripePublishableKey: "%s",\n};\n' "${{ vars.COGNITO_CLIENT_ID }}" "${{ vars.COGNITO_DOMAIN }}" "${{ vars.STRIPE_PUBLISHABLE_KEY }}" > frontend/config.js
+          aws s3 sync frontend/ "s3://${{ vars.SITES_BUCKET }}/$APP/" --delete --exclude CLAUDE.md --exclude config.example.js --exclude serve.py
+          aws cloudfront create-invalidation --distribution-id "${{ vars.DISTRIBUTION_ID }}" --paths '/*' --output text --query Invalidation.Status

@@ -1,0 +1,6 @@
+target/
+.env
+.DS_Store
+.idea/
+frontend/config.js
+.stripe-listen.log

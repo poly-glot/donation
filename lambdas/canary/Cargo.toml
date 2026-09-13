@@ -1,0 +1,20 @@
+[package]
+name = "canary"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "canary"
+path = "src/lib.rs"
+
+[[bin]]
+name = "canary"
+path = "src/main.rs"
+
+[dependencies]
+lambda_runtime = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+shared = { path = "../../crates/shared" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }

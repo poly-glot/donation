@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shared",
+    "lambdas/admin",
+    "lambdas/api",
+    "lambdas/canary",
+    "lambdas/draw-run",
+    "lambdas/reconcile",
+    "lambdas/stripe-webhook",
+    "lambdas/subscription-charge",
+]
+
+[workspace.dependencies]
+aws-config = "1"
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
+aws-sdk-dynamodb = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+getrandom = "0.4"
+hex = "0.4"
+hmac = "0.12"
+lambda_http = "0.13"
+lambda_runtime = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

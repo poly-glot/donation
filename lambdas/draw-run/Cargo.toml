@@ -1,0 +1,24 @@
+[package]
+name = "draw-run"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "draw_run"
+path = "src/lib.rs"
+
+[[bin]]
+name = "draw-run"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { workspace = true }
+lambda_http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shared = { path = "../../crates/shared" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+shared = { path = "../../crates/shared", features = ["testing"] }
