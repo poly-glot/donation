@@ -299,12 +299,13 @@ bind mount.
 
 Put Stripe **test-mode** keys in `.env` (it is gitignored). The committed `.env.enc` is that file with its
 values encrypted by [SOPS](https://github.com/getsops/sops) for one [age](https://age-encryption.org)
-recipient, named in `.sops.yaml`; the matching private key is the `donation-env-age-key` secret in the
-`firebase-cloud-491613` Google Cloud project, so a fresh machine recovers the file with:
+recipient, named in `.sops.yaml`; the matching private key is the `sops-key` secret in the
+`firebase-cloud-491613` Google Cloud project, one age key shared by every project that encrypts this way,
+so a fresh machine recovers the file with:
 
 ```bash
 brew install sops age
-export SOPS_AGE_KEY="$(gcloud secrets versions access latest --secret donation-env-age-key --project firebase-cloud-491613)"
+export SOPS_AGE_KEY="$(gcloud secrets versions access latest --secret sops-key --project firebase-cloud-491613)"
 sops --decrypt --input-type dotenv --output-type dotenv .env.enc > .env
 ```
 
