@@ -504,3 +504,10 @@ docker run --rm --network raffle-net \
   rust:1-slim cargo test --workspace
 docker rm -f raffle-ddb && docker network rm raffle-net
 ```
+
+`.github/workflows/test.yml` runs the same three commands — `cargo fmt --all --check`, `cargo clippy
+--workspace --all-targets -- -D warnings` and `cargo test --workspace` — on every pull request and every
+push to `main`, with `amazon/dynamodb-local` as a service container and the same AWS environment the dev
+container sets, so the integration tests run rather than skip. It needs no secrets: the Stripe client
+tests use a local mock server and the gateway is scripted. Make it a required check on `main` so a red
+suite stops a merge instead of a deploy.

@@ -128,7 +128,9 @@ respect; this repository deploys code only.
   same compiler on first use. Bump the pin deliberately, in its own change, with the suite green.
 - No cargo on the host. In the dev container run `cargo fmt --all`, `cargo clippy --workspace
   --all-targets` and `cargo test --workspace`. Off-container the Docker command in `README.md` runs the
-  same.
+  same, and `.github/workflows/test.yml` runs the three against a DynamoDB Local service container on
+  every pull request and push to `main`, so a red suite is caught before the merge and never in the
+  deploy.
 - Reach for the language before a helper: `let … else` for absent rows, `let` chains
   (`if let Some(x) = a && cond`) instead of `.filter(|_| cond)` or nested `if let`, `LazyLock` for
   process-wide values, and `async move |x| …` closures where a plain closure would only wrap an

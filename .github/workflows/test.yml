@@ -1,0 +1,53 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: test-${{ github.ref }}
+
+env:
+  AWS_ACCESS_KEY_ID: local
+  AWS_ENDPOINT_URL_DYNAMODB: http://localhost:8000
+  AWS_REGION: eu-west-2
+  AWS_SECRET_ACCESS_KEY: local
+  CARGO_PROFILE_DEV_DEBUG: 0
+  TABLE_NAME: raffle-local
+
+jobs:
+  test:
+    name: Format, lint and test
+    runs-on: ubuntu-24.04-arm
+
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:latest
+        options: >-
+          --health-cmd "curl -sf http://localhost:8000 || [ $? -eq 22 ]"
+          --health-interval 5s
+          --health-retries 10
+          --health-start-period 5s
+          --health-timeout 3s
+        ports:
+          - 8000:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the formatting
+        run: cargo fmt --all --check
+
+      - name: Lint the workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run the tests
+        run: cargo test --workspace --locked
