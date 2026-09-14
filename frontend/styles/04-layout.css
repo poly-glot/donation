@@ -78,6 +78,20 @@ main {
         text-transform: uppercase;
     }
 
+    .gh {
+        color: var(--text-secondary);
+        display: inline-flex;
+
+        &:hover {
+            color: var(--text-primary);
+        }
+
+        &:focus-visible {
+            outline: 2px solid var(--text-primary);
+            outline-offset: 2px;
+        }
+    }
+
     .raffle-name {
         @media (max-width: 600px) {
             display: none;
