@@ -304,22 +304,29 @@ and the total sold, then works out which counter and which ticket that number la
 frozen in the draw record. The raffle page's running totals are the sum of the counters.
 
 Eight counters mean eight times fewer orders queueing on any one of them, so a burst is refused far less
-often. Against a local copy of the database, racing orders on one raffle and counting how many times an
-order had to retry because another got there first, and how many orders gave up after their ten attempts:
+often. Measured on the live site on 19 September 2026 with the same stress test, the same five
+deliveries, on the live raffle with its single counter and on a demo raffle created with eight:
 
-| Orders at once | One counter, retries and orders that gave up | Eight counters, retries and orders that gave up |
-|----------------|----------------------------------------------|-------------------------------------------------|
-| 40             | 124, none gave up                            | 50, none                                        |
-| 80             | 439, up to 3 gave up                         | 151, none                                       |
-| 160            | 1,349, about half gave up                    | 562, none                                       |
+| Orders sent               | One counter: accepted, refused | Eight counters: accepted, refused | One counter: typical wait | Eight counters: typical wait |
+|---------------------------|--------------------------------|-----------------------------------|---------------------------|------------------------------|
+| 40 in the same instant    | 35, 5                          | 40, none                          | 1.3 seconds               | 0.95 seconds                 |
+| 80 in the same instant    | 66, 14                         | 80, none                          | 1.3 seconds               | 0.22 seconds                 |
+| 160 in the same instant   | 117, 43                        | 160, none                         | 2.6 seconds               | 0.48 seconds                 |
+| 20 a second for 5 seconds | 100, none                      | 100, none                         | 60 milliseconds           | 59 milliseconds              |
+| 50 a second for 3 seconds | 93, 57                         | 107, 43                           | 0.24 seconds              | 0.11 seconds                 |
 
-The local copy runs one transaction at a time, so the eight counters could not work in parallel there;
-on the real service each counter has its own partition, so they do. The cost is eight runs of ticket
-numbers instead of one, the longer label, and up to 152 tickets that can stay unsold when the raffle
-reaches its cap. The queue keeps one run of numbers and costs less to write, so it stays the first
-choice when a launch is being paid for; the counters are the setting to reach for when a queue is not
-wanted. To measure a counters raffle on the live site, create one and run the stress test above with
-`STRESS_RAFFLE_ID` naming it.
+With eight counters no order arriving in the same instant was refused, up to 160 at once, and 160 went
+through in under two seconds where the single counter took five. The refusals left at 50 a second are
+not the counters: that run came last, after 380 sales in three minutes had drained the free capacity's
+reserve, and every refused order got its tickets on the resend. Raising the database capacity for a
+launch, as described above, is what lifts that one.
+
+The cost is eight runs of ticket numbers instead of one, the longer label, and up to 152 tickets that
+can stay unsold when the raffle reaches its cap. The queue keeps one run of numbers and costs less to
+write, so it stays the first choice when a launch is being paid for; the counters are the setting to
+reach for when a queue is not wanted. To measure a counters raffle yourself, create one and run the
+stress test above with `STRESS_RAFFLE_ID` naming it; the retry bench in `crates/shared/tests/shard.rs`
+compares the two allocators against a local copy of the database.
 
 The other ceilings, the subscription charge run at a few thousand subscribers a raffle and the
 reconciliation's 48-hour window, are listed with their upgrade paths in the spec.
