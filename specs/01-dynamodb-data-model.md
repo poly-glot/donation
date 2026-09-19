@@ -417,9 +417,9 @@ functions, the site, public URLs for `api` and `stripe-webhook`, the schedules, 
 ## Deliberate simplifications and their ceilings
 
 - **A compare-and-set counter instead of a single-writer queue.** Every paid order on a raffle is serialised on one
-  item. Measured against DynamoDB Local, the counter drains any paced rate it was offered, but its ten jittered attempts
-  cover about eighty webhooks arriving in the same instant; past that the losers answer 500 and Stripe redelivers them
-  minutes later. At the free 25 units the indexes throttle first, at about one sale a second sustained with a bank of
+  item. Measured on the deployment, the counter drains about thirty allocations a second, and a same-instant burst of
+  forty already loses one in eight to its ten jittered attempts; the losers answer 500 and Stripe redelivers them
+  minutes later, so numbers arrive late and are never lost. At the free 25 units the indexes throttle first, at about one sale a second sustained with a bank of
   about three hundred. Past that, route payment events through a FIFO queue keyed by raffle so one consumer allocates
   per raffle, and drop the retry loop. `shared::shard` is the measured no-queue alternative, eight counters per raffle
   with a prefix-sum draw, not wired into any function; it strands at most eight times one less than the per-order

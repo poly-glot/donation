@@ -186,9 +186,9 @@ five write units on lost rounds for every one on a successful allocation.
 | GSI1 writes      | 5 units, 5 per sale                             | about 1 sale a second sustained           |
 | table writes     | 15 units, 10 per sale                           | about 1.5 sales a second sustained        |
 | GSI2 writes      | 5 units, 2 per sale                             | about 2.5 sales a second sustained        |
-| Lambda           | the account's concurrency quota                 | 10 on a new account until raised          |
+| Lambda           | the account's concurrency quota                 | 10 on a new account until raised; 160 at once accepted here |
 | Stripe API       | 100 write requests a second in live mode        | 100 checkouts a second                    |
-| ticket counter   | one compare-and-set per raffle                  | any paced rate; about 80 arriving at once |
+| ticket counter   | one compare-and-set per raffle                  | about 30 allocations a second; 40 at once sheds |
 | raffle partition | 1,000 write units a second on one partition key | about 160 allocations a second            |
 
 **Capacity is the first wall, and it is the index's.** Five write units on GSI1 against five writes per
@@ -218,21 +218,26 @@ handler, skipping Stripe and the signature check, for one raffle:
 | 50 a second for 5 seconds  | 250 of 250 | 0            | 7 ms        |
 | 100 a second for 5 seconds | 500 of 500 | 0            | 5 ms        |
 
-The counter copes with any rate it can drain and fails on simultaneity. The ten jittered attempts cover
-roughly eighty webhooks arriving in the same instant; beyond that the losers exhaust their attempts, the
+The counter copes with any rate it can drain and fails on simultaneity. On DynamoDB Local the ten jittered
+attempts cover roughly eighty webhooks arriving in the same instant, on the real service about thirty-five;
+beyond that the losers exhaust their attempts, the
 webhook answers 500 and Stripe redelivers the event minutes later, while the confirmation page gives up
 after sixty seconds and asks the supporter to reload. Numbers arrive late, never lost. Real payments are
 spread by human checkout time, so a few hundred buyers a minute reach the webhook a few a second, well
 inside the budget, and the subscription charge run charges one subscriber at a time, so its webhooks
 arrive spaced.
 
-**The deployment is measured too.** The same test file drives a deployment's public checkout end to
-end when `STRESS_BASE_URL` names it: each sale is a real `POST /api/raffles/{id}/orders`, a real Stripe
-test-mode confirmation with the Visa debit test card, and a poll of `GET /api/orders/{id}` every two
-seconds until the tickets appear, the way the confirmation page does. Stripe's test mode allows 25
-requests a second and a sale costs two, one from the checkout and one from the confirmation, so the
-offered rate tops out near ten sales a second; live mode allows four times that. Measured on
-`donation.junaid.guru` at the free 25 units, 140 sales in three runs, every one allocated:
+**The deployment is measured too, two ways.** With `STRESS_BASE_URL` set, the same test file drives a
+deployment's public checkout end to end: each sale is a real `POST /api/raffles/{id}/orders`, a real
+Stripe test-mode confirmation with the Visa debit test card, and a poll of `GET /api/orders/{id}` every
+two seconds until the tickets appear, the way the confirmation page does. Stripe's test mode allows 25
+requests a second and a sale costs two, one from the checkout and one from the confirmation, so this
+mode tops out near ten sales a second; live mode allows four times that. With `STRESS_WEBHOOK_URL` and
+`STRESS_WEBHOOK_SECRET` set as well, a second mode prepares the orders the same way, then signs
+`charge.succeeded` events itself and posts them straight to the webhook's function URL, so the delivery
+rate is bounded only by the stack; it polls every order for its tickets and redelivers whatever the
+webhook refused once, five seconds later, as Stripe would. Measured on `donation.junaid.guru` at the
+free 25 units on 19 September 2026. Through Stripe, 140 sales, every one allocated:
 
 | Offered            | Checkout p50 | Stripe confirm p50 | Tickets visible p50 | p95   | Failures |
 |--------------------|--------------|--------------------|---------------------|-------|----------|
@@ -242,17 +247,38 @@ offered rate tops out near ten sales a second; live mode allows four times that.
 
 Tickets visible is measured from Stripe's confirmation and includes Stripe's webhook delivery, the
 allocation and the two-second poll, so two seconds means the first poll found them. At ten sales a
-second the median doubled and the tail reached six and a half seconds: Stripe delivering the webhooks in
-parallel, the allocator's lost rounds on the real service, and cold starts of extra webhook
-environments all land in that window, and the run was too short to exhaust the capacity bank. Nothing
-failed and nothing was redelivered.
+second the median doubled and the tail reached six and a half seconds. Nothing failed and nothing was
+redelivered.
+
+Straight to the webhook, 530 events, every one allocated on the first or the second delivery:
+
+| Delivery              | Answered 200 | Answered 500 | Latency p50 | p95    | Recovered on redelivery |
+|-----------------------|--------------|--------------|-------------|--------|-------------------------|
+| 40 at once            | 35           | 5            | 1.3 s       | 1.8 s  | 5 of 5                  |
+| 80 at once            | 66           | 14           | 1.3 s       | 2.0 s  | 14 of 14                |
+| 160 at once           | 117          | 43           | 2.6 s       | 4.0 s  | 43 of 43                |
+| 20 a second for 5 s   | 100          | 0            | 60 ms       | 160 ms | none needed             |
+| 50 a second for 3 s   | 93           | 57           | 0.24 s      | 2.4 s  | 57 of 57                |
+
+Three things the real service says that DynamoDB Local could not. The counter drains about thirty
+allocations a second: 160 simultaneous events took five seconds, one commit every thirty milliseconds,
+twenty a second went through clean and fifty a second lost a third. A same-instant burst sheds earlier
+than Local suggested: forty at once already lost one in eight to the ten-attempt budget, where Local
+carried eighty. And no delivery was refused for Lambda concurrency, so the account's quota is well above
+the ten it started with. Every refused event was accepted on redelivery in under three hundred
+milliseconds, so the ceiling shows as ticket numbers arriving late, never as tickets lost, which is what
+the spec claims. From outside, a 500 cannot be split between the retry budget and a capacity throttle;
+the clean pass at twenty a second, at the same write volume as the failing bursts, points at the counter.
 
 ```bash
 STRESS_BASE_URL=https://donation.junaid.guru cargo test -p stripe-webhook --test stress -- --ignored --nocapture checkout_throughput
+STRESS_BASE_URL=… STRESS_WEBHOOK_URL=… STRESS_WEBHOOK_SECRET=… cargo test -p stripe-webhook --test stress -- --ignored --nocapture webhook_throughput_against
 ```
 
-Each run leaves its sales in the raffle: a synthetic entrant per sale, one £1 ticket each, paid with a
-test card, so run it against a demo raffle only.
+The webhook URL is the endpoint subscribed in the Stripe dashboard and the secret is that endpoint's
+signing secret, which Stripe shows only there. Each run leaves its sales in the raffle, a synthetic
+entrant per sale with one £1 ticket, and the direct mode marks its orders paid with no charge behind
+them, so run either against a demo raffle only.
 
 ### Reaching 200 paid orders a second
 

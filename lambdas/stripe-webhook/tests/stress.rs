@@ -393,3 +393,189 @@ async fn checkout_throughput_against_a_deployment() {
             .report();
     }
 }
+
+const REDELIVERY_PAUSE: Duration = Duration::from_secs(5);
+
+struct Delivery {
+    order_id: String,
+    intent_id: String,
+    status: u16,
+    latency: Duration,
+}
+
+struct Endpoint {
+    url: String,
+    secret: String,
+}
+
+fn stripe_signature(secret: &str, timestamp: i64, payload: &str) -> String {
+    use hmac::{Hmac, Mac};
+
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("any key length");
+    mac.update(format!("{timestamp}.{payload}").as_bytes());
+    format!("t={timestamp},v1={}", hex::encode(mac.finalize().into_bytes()))
+}
+
+fn charge_succeeded(order_id: &str, intent_id: &str) -> String {
+    json!({
+        "id": format!("evt_stress_{order_id}"),
+        "type": "charge.succeeded",
+        "data": { "object": {
+            "id": format!("ch_stress_{order_id}"),
+            "object": "charge",
+            "payment_intent": intent_id,
+            "metadata": { "orderId": order_id },
+            "payment_method_details": { "card": { "funding": "debit", "last4": "5556" } }
+        } }
+    })
+    .to_string()
+}
+
+fn tally(deliveries: &[Delivery]) -> String {
+    let count = |matches: fn(u16) -> bool| deliveries.iter().filter(|delivery| matches(delivery.status)).count();
+    let mut latencies: Vec<Duration> = deliveries.iter().map(|delivery| delivery.latency).collect();
+
+    format!(
+        "200 x{}, 429 x{}, 5xx x{}, other x{}; latency p50 {:?} p95 {:?} max {:?}",
+        count(|status| status == 200),
+        count(|status| status == 429),
+        count(|status| (500..600).contains(&status)),
+        count(|status| status != 200 && status != 429 && !(500..600).contains(&status)),
+        percentile(&mut latencies, 50),
+        percentile(&mut latencies, 95),
+        latencies.iter().max().copied().unwrap_or_default()
+    )
+}
+
+impl Site {
+    async fn post_signed(&self, endpoint: &Endpoint, order_id: String, intent_id: String) -> Delivery {
+        let payload = charge_succeeded(&order_id, &intent_id);
+        let signature = stripe_signature(&endpoint.secret, Utc::now().timestamp(), &payload);
+        let began = Instant::now();
+
+        let status = self
+            .http
+            .post(&endpoint.url)
+            .header("stripe-signature", signature)
+            .header("content-type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .map(|response| response.status().as_u16())
+            .unwrap_or_default();
+
+        Delivery {
+            order_id,
+            intent_id,
+            status,
+            latency: began.elapsed(),
+        }
+    }
+
+    async fn prepare(&self, run_id: &str, count: usize) -> Vec<(String, String)> {
+        let mut pending = Vec::with_capacity(count);
+        for i in 1..=count {
+            let (order_id, client_secret) = self.checkout(&format!("{run_id}-{i}@example.com")).await.expect("checkout while preparing");
+            let intent_id = client_secret.split("_secret_").next().unwrap_or_default().to_string();
+            pending.push((order_id, intent_id));
+        }
+        pending
+    }
+}
+
+async fn fire(site: &Arc<Site>, endpoint: &Arc<Endpoint>, pending: Vec<(String, String)>, per_second: Option<u64>) -> (Vec<Delivery>, Duration) {
+    let started = Instant::now();
+
+    let mut deliveries = JoinSet::new();
+    for (order_id, intent_id) in pending {
+        let site = Arc::clone(site);
+        let endpoint = Arc::clone(endpoint);
+        deliveries.spawn(async move { site.post_signed(&endpoint, order_id, intent_id).await });
+        if let Some(per_second) = per_second {
+            tokio::time::sleep(Duration::from_millis(1_000 / per_second)).await;
+        }
+    }
+    let deliveries = deliveries.join_all().await;
+
+    (deliveries, started.elapsed())
+}
+
+async fn allocated(site: &Arc<Site>, order_ids: Vec<String>) -> (usize, usize) {
+    let mut polls = JoinSet::new();
+    for order_id in order_ids {
+        let site = Arc::clone(site);
+        polls.spawn(async move { site.await_tickets(&order_id).await.0.is_ok() });
+    }
+    let outcomes = polls.join_all().await;
+
+    let allocated = outcomes.iter().filter(|allocated| **allocated).count();
+    (allocated, outcomes.len() - allocated)
+}
+
+async fn direct(site: &Arc<Site>, endpoint: &Arc<Endpoint>, label: &str, events: usize, per_second: Option<u64>) {
+    let run_id = shared::random::id("direct");
+    let pending = site.prepare(&run_id, events).await;
+
+    let (deliveries, elapsed) = fire(site, endpoint, pending, per_second).await;
+    println!(
+        "{label}: {events} events in {:.2}s = {:.1}/s; {}",
+        elapsed.as_secs_f64(),
+        events as f64 / elapsed.as_secs_f64(),
+        tally(&deliveries)
+    );
+
+    let (landed, stuck) = allocated(site, deliveries.iter().map(|delivery| delivery.order_id.clone()).collect()).await;
+    println!("    tickets visible within {TICKETS_DEADLINE:?}: {landed} allocated, {stuck} not");
+
+    let rejected: Vec<(String, String)> = deliveries
+        .into_iter()
+        .filter(|delivery| delivery.status != 200)
+        .map(|delivery| (delivery.order_id, delivery.intent_id))
+        .collect();
+    if rejected.is_empty() {
+        return;
+    }
+
+    tokio::time::sleep(REDELIVERY_PAUSE).await;
+    let (redeliveries, _) = fire(site, endpoint, rejected, Some(20)).await;
+    let (recovered, still_stuck) = allocated(site, redeliveries.iter().map(|delivery| delivery.order_id.clone()).collect()).await;
+    println!(
+        "    redelivered {} at 20/s after {REDELIVERY_PAUSE:?}: {}; {recovered} recovered, {still_stuck} still not allocated",
+        redeliveries.len(),
+        tally(&redeliveries)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "posts signed events straight to a deployed webhook; set STRESS_BASE_URL, STRESS_WEBHOOK_URL and STRESS_WEBHOOK_SECRET"]
+async fn webhook_throughput_against_a_deployment() {
+    let (Ok(base), Ok(url), Ok(secret)) = (
+        std::env::var("STRESS_BASE_URL"),
+        std::env::var("STRESS_WEBHOOK_URL"),
+        std::env::var("STRESS_WEBHOOK_SECRET"),
+    ) else {
+        eprintln!("skipping: STRESS_BASE_URL, STRESS_WEBHOOK_URL and STRESS_WEBHOOK_SECRET are all needed");
+        return;
+    };
+    if secret.is_empty() {
+        eprintln!("skipping: STRESS_WEBHOOK_SECRET is empty");
+        return;
+    }
+    let site = Arc::new(Site::discover(base.trim_end_matches('/').to_string()).await);
+    let endpoint = Arc::new(Endpoint { url, secret });
+    println!("posting signed charge.succeeded events for raffle {} straight to the webhook", site.raffle_id);
+
+    for events in [40, 80, 160] {
+        direct(&site, &endpoint, &format!("{events} events at once"), events, None).await;
+    }
+    for (per_second, seconds) in [(20, 5), (50, 3)] {
+        direct(
+            &site,
+            &endpoint,
+            &format!("{per_second}/s for {seconds}s"),
+            per_second * seconds,
+            Some(per_second as u64),
+        )
+        .await;
+    }
+}
