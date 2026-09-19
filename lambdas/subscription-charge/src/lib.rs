@@ -38,7 +38,6 @@ pub async fn run<G: PaymentGateway>(repo: &DynamoRepo, gateway: &G, now: DateTim
     for raffle in raffles.iter().filter(|raffle| raffle.needs_subscription_charge(now)) {
         telemetry::emit(
             &[("SubscriptionChargeLagHours", charge_lag_hours(raffle, now))],
-            &[],
             &[("raffleId", &raffle.raffle_id)],
         );
         runs.push(charge_raffle(repo, gateway, raffle, now).await?);
@@ -71,7 +70,6 @@ async fn charge_raffle<G: PaymentGateway>(repo: &DynamoRepo, gateway: &G, raffle
             ("SubscriptionsDeclined", f64::from(run.declined)),
             ("SubscriptionsErrored", f64::from(run.errored)),
         ],
-        &[],
         &[("raffleId", &raffle.raffle_id)],
     );
     tracing::info!(raffle_id = %run.raffle_id, run.charged, run.declined, run.skipped, run.errored, "subscription charge run finished");

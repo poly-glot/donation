@@ -18,7 +18,7 @@ pub fn init_logging() {
         .init();
 }
 
-fn emf_line(namespace: &str, timestamp_millis: i64, values: &[(&str, f64)], dimensions: &[(&str, &str)], properties: &[(&str, &str)]) -> Value {
+fn emf_line(namespace: &str, timestamp_millis: i64, values: &[(&str, f64)], properties: &[(&str, &str)]) -> Value {
     let mut line = Map::new();
     line.insert(
         "_aws".into(),
@@ -26,13 +26,13 @@ fn emf_line(namespace: &str, timestamp_millis: i64, values: &[(&str, f64)], dime
             "Timestamp": timestamp_millis,
             "CloudWatchMetrics": [{
                 "Namespace": namespace,
-                "Dimensions": [dimensions.iter().map(|(name, _)| *name).collect::<Vec<_>>()],
+                "Dimensions": [[]],
                 "Metrics": values.iter().map(|(name, _)| json!({ "Name": name, "Unit": "None" })).collect::<Vec<_>>(),
             }],
         }),
     );
 
-    for (name, value) in dimensions.iter().chain(properties) {
+    for (name, value) in properties {
         line.insert((*name).into(), json!(value));
     }
     for (name, value) in values {
@@ -41,12 +41,8 @@ fn emf_line(namespace: &str, timestamp_millis: i64, values: &[(&str, f64)], dime
     Value::Object(line)
 }
 
-pub fn emit(values: &[(&str, f64)], dimensions: &[(&str, &str)], properties: &[(&str, &str)]) {
-    println!("{}", emf_line(&NAMESPACE, Utc::now().timestamp_millis(), values, dimensions, properties));
-}
-
-pub fn count(name: &str, dimensions: &[(&str, &str)], properties: &[(&str, &str)]) {
-    emit(&[(name, 1.0)], dimensions, properties);
+pub fn emit(values: &[(&str, f64)], properties: &[(&str, &str)]) {
+    println!("{}", emf_line(&NAMESPACE, Utc::now().timestamp_millis(), values, properties));
 }
 
 #[cfg(test)]
@@ -54,37 +50,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn emf_line_declares_metrics_and_dimensions_and_carries_their_values() {
+    fn emf_line_declares_its_metrics_without_dimensions_beside_their_values_and_properties() {
         let line = emf_line(
             "raffle-test",
             1_700_000_000_000,
-            &[("WebhookOutcome", 1.0)],
-            &[("Outcome", "Allocated")],
-            &[("eventId", "evt_1")],
-        );
-
-        assert_eq!(line["_aws"]["Timestamp"], 1_700_000_000_000_i64);
-        assert_eq!(line["_aws"]["CloudWatchMetrics"][0]["Namespace"], "raffle-test");
-        assert_eq!(line["_aws"]["CloudWatchMetrics"][0]["Dimensions"], json!([["Outcome"]]));
-        assert_eq!(line["_aws"]["CloudWatchMetrics"][0]["Metrics"][0]["Name"], "WebhookOutcome");
-        assert_eq!(line["Outcome"], "Allocated");
-        assert_eq!(line["eventId"], "evt_1");
-        assert_eq!(line["WebhookOutcome"], 1.0);
-    }
-
-    #[test]
-    fn emf_line_without_dimensions_still_lists_an_empty_dimension_set() {
-        let line = emf_line(
-            "raffle-test",
-            0,
             &[("SubscriptionsCharged", 3.0), ("SubscriptionsErrored", 0.0)],
-            &[],
             &[("raffleId", "winter")],
         );
+        let declared = &line["_aws"]["CloudWatchMetrics"][0];
+        let names: Vec<&Value> = declared["Metrics"]
+            .as_array()
+            .expect("a metric list")
+            .iter()
+            .map(|metric| &metric["Name"])
+            .collect();
 
-        assert_eq!(line["_aws"]["CloudWatchMetrics"][0]["Dimensions"], json!([[]]));
-        assert_eq!(line["_aws"]["CloudWatchMetrics"][0]["Metrics"].as_array().map(Vec::len), Some(2));
-        assert_eq!(line["SubscriptionsCharged"], 3.0);
-        assert_eq!(line["raffleId"], "winter");
+        assert_eq!(
+            line["_aws"]["Timestamp"], 1_700_000_000_000_i64,
+            "the timestamp CloudWatch files the line under"
+        );
+        assert_eq!(declared["Namespace"], "raffle-test", "the namespace the metrics land in");
+        assert_eq!(declared["Dimensions"], json!([[]]), "one empty dimension set, so no series multiplies");
+        assert_eq!(names, ["SubscriptionsCharged", "SubscriptionsErrored"], "every value is declared as a metric");
+        assert_eq!(
+            (&line["SubscriptionsCharged"], &line["SubscriptionsErrored"]),
+            (&json!(3.0), &json!(0.0)),
+            "each declared metric carries its value at the top level"
+        );
+        assert_eq!(line["raffleId"], "winter", "a property rides along undeclared");
     }
 }

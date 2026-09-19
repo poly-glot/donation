@@ -181,7 +181,7 @@ pub async fn run<G: PaymentGateway>(repo: &DynamoRepo, gateway: &G, now: DateTim
     for found in &report.violations {
         tracing::error!(check = found.check, subject = %found.subject, detail = %found.detail, "integrity violation");
     }
-    telemetry::emit(&[("IntegrityViolations", report.violations.len() as f64)], &[], &[]);
+    telemetry::emit(&[("IntegrityViolations", report.violations.len() as f64)], &[]);
     tracing::info!(
         report.raffles_checked,
         report.entries_checked,

@@ -1,10 +1,10 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use lambda_http::http::Method;
-use lambda_http::http::header::{CACHE_CONTROL, HeaderValue};
 use lambda_http::{Body, Request, Response};
 use serde::{Deserialize, Serialize};
 use shared::entrant::{Address, Entrant, GiftAidDeclaration, MarketingConsent};
 use shared::error::AppError;
+use shared::http::{body, json, private, refused};
 use shared::order::{Order, OrderStatus, validate_purchase};
 use shared::raffle::{Prize, Raffle, RaffleStatus};
 use shared::random;
@@ -163,19 +163,9 @@ impl<G: PaymentGateway> Api<G> {
         Self { repo, gateway }
     }
 
+    #[tracing::instrument(skip_all, fields(method = %request.method(), path = request.uri().path()))]
     pub async fn handle(&self, request: Request) -> Response<Body> {
-        self.route(&request, Utc::now()).await.unwrap_or_else(|err| {
-            let status = err.status_code();
-            let method = request.method().as_str();
-            let path = request.uri().path();
-
-            if status >= 500 {
-                tracing::error!(status, method, path, error = %err, "request failed");
-            } else {
-                tracing::warn!(status, method, path, error = %err, "request rejected");
-            }
-            json(err.status_code(), &serde_json::json!({ "error": err.public_message() }))
-        })
+        self.route(&request, Utc::now()).await.unwrap_or_else(|err| refused(&err))
     }
 
     async fn route(&self, request: &Request, now: DateTime<Utc>) -> Result<Response<Body>, AppError> {
@@ -183,15 +173,8 @@ impl<G: PaymentGateway> Api<G> {
 
         match (request.method(), segments.as_slice()) {
             (&Method::GET, ["raffles", "current"]) => Ok(json(200, &self.current(now).await?)),
-            (&Method::GET, ["orders", order_id]) => {
-                let mut response = json(200, &self.order(order_id).await?);
-                response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-                Ok(response)
-            }
-            (&Method::POST, ["raffles", raffle_id, "orders"]) => {
-                let body = serde_json::from_slice(request.body().as_ref()).map_err(|err| AppError::BadRequest(format!("invalid body: {err}")))?;
-                Ok(json(201, &self.create_order(raffle_id, body, now).await?))
-            }
+            (&Method::GET, ["orders", order_id]) => Ok(private(json(200, &self.order(order_id).await?))),
+            (&Method::POST, ["raffles", raffle_id, "orders"]) => Ok(json(201, &self.create_order(raffle_id, body(request)?, now).await?)),
             _ => Err(AppError::NotFound("route".into())),
         }
     }
@@ -320,15 +303,6 @@ fn payment_intent_request(order: &Order, raffle: &Raffle, entrant: &Entrant) -> 
             ("entrantId".into(), entrant.entrant_id.clone()),
         ],
     }
-}
-
-fn json<T: Serialize>(status: u16, body: &T) -> Response<Body> {
-    let payload = serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string());
-    Response::builder()
-        .status(status)
-        .header("content-type", "application/json")
-        .body(Body::from(payload))
-        .unwrap_or_else(|_| Response::new(Body::Empty))
 }
 
 #[cfg(test)]

@@ -121,7 +121,7 @@ These hold on every change, whatever the task.
 - A handler that can answer 5xx logs it at error level with a `status` field. The `Http5xx` metric
   filter in `aws-cloud` reads that field, so the browse, checkout and webhook availability SLOs
   depend on it.
-- Metrics are EMF lines through `shared::telemetry::{emit,count}` and carry no dimensions: a
+- Metrics are EMF lines through `shared::telemetry::emit` and carry no dimensions: a
   dimension multiplies series.
 
 ## 7. Performance and memory
