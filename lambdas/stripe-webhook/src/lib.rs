@@ -151,7 +151,7 @@ impl<G: PaymentGateway> Webhook<G> {
         };
 
         if let Some(metric) = outcome.metric() {
-            telemetry::count(metric, &[], &[("eventId", &event_id)]);
+            telemetry::emit(&[(metric, 1.0)], &[("eventId", &event_id)]);
         }
         tracing::info!(event_id = %event_id, kind = %kind, outcome = ?outcome, "webhook processed");
         respond(200, format!("{outcome:?}"))
