@@ -217,9 +217,9 @@ What this means in practice:
 - **A steady flow of 20 paid orders a second goes through without a single failure**, and each supporter
   sees their ticket numbers within a fraction of a second. A charity's busiest minute is a few sales a
   second, so there is a wide margin.
-- **The limit is about 30 paid orders a second on one raffle.** Every paid order updates the raffle's
-  ticket counter, and the counter can only be updated one order at a time, so 160 orders arriving
-  together take about five seconds to work through.
+- **The limit is about 30 paid orders a second on one raffle.** The live site keeps a single ticket
+  counter per raffle, every paid order updates it, and it can only be updated one order at a time, so
+  160 orders arriving together take about five seconds to work through.
 - **Orders that arrive in the same instant can be refused the first time.** When 40 land together, about
   one in eight is refused; when 160 land together, one in four. A refused order is not lost. Stripe sends
   the message again a few minutes later, and in the test every refused order received its tickets on the
@@ -291,29 +291,35 @@ raffle's partition, and a partition writes a thousand units a second. DynamoDB s
 on its own, but not instantly, so a raffle expected to pass that rate wants its capacity raised the day
 before rather than the hour before.
 
-### A sharded counter, measured
+### A sharded counter, not in use
 
-If a queue is refused, the counter can be split instead. `shared::shard` keeps eight `COUNTER#` rows
-per raffle, each owning an eighth of the licence cap; an order hashes to a home shard and moves to the
-next one when its own is full; the ledger key becomes `ENTRY#{shard}#{offset}`; and the draw still picks
-one uniform integer in 1 to N, where N is the sum of the eight counts frozen in the draw record, mapped
-to a shard and an offset by prefix sums. It is not wired into any function. Its contention test races
-paid orders on one raffle and counts the compare-and-set rounds lost, median of five runs, with the
-orders that exhausted their ten attempts:
+The live site does not use this. Everything measured above is the single counter per raffle that the
+site runs today. This section describes an alternative that exists in the code, in `shared::shard`, but
+that no function calls.
 
-| Orders at once | One counter         | Eight shards |
-|----------------|---------------------|--------------|
-| 40             | 124, none exhausted | 50, none     |
-| 80             | 439, up to 3        | 151, none    |
-| 160            | 1,349, about half   | 562, none    |
+The idea is to split each raffle's counter into eight. Each of the eight owns an eighth of the licence
+cap; an order is assigned to one of them by its order id and moves to the next when its own is full;
+tickets are numbered within their counter rather than across the raffle, so a ticket reads as 3-000412
+rather than 412; and the draw still picks one number between 1 and the total sold, then works out which
+counter and which ticket that number lands on from the eight counts recorded at the draw. Eight counters
+mean eight times fewer orders queueing on any one of them, so a burst is refused far less often.
 
-DynamoDB Local serialises every transaction through one lock, so the shards cannot commit in parallel
-there and the ratio understates the real service. What the shards buy is the exhaustion column. What
-they cost: eight contiguous runs instead of one, a shard-prefixed ticket label, a tail of at most eight
-times one less than the per-order maximum that can stay unsold at the cap, and, before a real run, a
-partition key per shard so the shards spread across partitions rather than sharing the raffle's. The
-queue keeps one gapless run and costs less to write, so it stays the first choice when launch money is
-being spent; the shards are the measured fallback.
+It was measured against a local copy of the database, not the live site, by racing orders on one raffle
+and counting how many times an order had to retry because another order got there first, and how many
+orders gave up after their ten attempts:
+
+| Orders at once | One counter, retries and orders that gave up | Eight counters, retries and orders that gave up |
+|----------------|----------------------------------------------|-------------------------------------------------|
+| 40             | 124, none gave up                            | 50, none                                        |
+| 80             | 439, up to 3 gave up                         | 151, none                                       |
+| 160            | 1,349, about half gave up                    | 562, none                                       |
+
+The local copy runs one transaction at a time, so the eight counters could not work in parallel there
+and the real gain would be larger. What it costs: eight runs of ticket numbers instead of one, the
+longer ticket label, up to 152 tickets that can stay unsold when the raffle reaches its cap, and, before
+it could be used, giving each counter its own partition in the database so they spread the load. The
+queue keeps one run of numbers and costs less to write, so it stays the first choice when a launch is
+being paid for; the eight counters are the measured fallback if a queue is not wanted.
 
 The other ceilings, the subscription charge run at a few thousand subscribers a raffle and the
 reconciliation's 48-hour window, are listed with their upgrade paths in the spec.
