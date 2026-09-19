@@ -1,5 +1,5 @@
 import { el, fieldValue, show } from "../dom.js";
-import { at, calendarDay, inPounds } from "../format.js";
+import { at, calendarDay, inPounds, ticketLabel } from "../format.js";
 import { admin } from "./actions.js";
 import { facts, link, number, row, rows, state } from "./markup.js";
 import { onSubmit } from "./task.js";
@@ -56,8 +56,8 @@ const orderRow = (order) =>
 const entryRow = (entry) =>
     row([
         link(`raffle/${entry.raffleId}`, entry.raffleId),
-        number(String(entry.ticketFrom)),
-        number(String(entry.ticketTo)),
+        number(ticketLabel({ number: entry.ticketFrom, shard: entry.shard })),
+        number(ticketLabel({ number: entry.ticketTo, shard: entry.shard })),
         number(String(entry.ticketTo - entry.ticketFrom + 1)),
         at(entry.allocatedAt),
     ]);
@@ -75,7 +75,7 @@ const winnerRow = (winner) =>
         link(`draw/${winner.raffleId}`, winner.raffleId),
         number(String(winner.sequence)),
         number(inPounds(winner.prizeAmountPence)),
-        number(String(winner.ticketNumber)),
+        number(ticketLabel({ number: winner.ticketNumber, shard: winner.shard })),
         state(winner.status),
     ]);
 

@@ -12,6 +12,10 @@ pub fn id(prefix: &str) -> String {
     format!("{prefix}_{}", hex::encode(bytes::<12>()))
 }
 
+pub fn jittered(cap: std::time::Duration) -> std::time::Duration {
+    cap.mul_f64(u64() as f64 / u64::MAX as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

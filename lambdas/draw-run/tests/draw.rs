@@ -143,6 +143,7 @@ async fn interrupt_after_the_first_prize(repo: &DynamoRepo, sales: &ClosedRaffle
         raffle_id: RAFFLE_ID.into(),
         drawn_at: now,
         tickets_sold: sales.tickets_sold,
+        shard_counts: vec![],
         method: METHOD.into(),
         conducted_by: "Rufus Cruft".into(),
         witnessed_by: None,
@@ -154,6 +155,7 @@ async fn interrupt_after_the_first_prize(repo: &DynamoRepo, sales: &ClosedRaffle
         sequence: 1,
         prize_rank: 1,
         prize_amount_pence: FIRST_PRIZE_PENCE,
+        shard: None,
         ticket_number: sales.first_paid.first_ticket,
         order_id: sales.first_paid.order_id.clone(),
         entrant_id: format!("ent-{}", sales.first_paid.order_id),
@@ -312,4 +314,41 @@ async fn refuses_to_draw_when_a_precondition_fails_and_records_nothing() {
             "{label}: a refused draw leaves the raffle undrawn"
         );
     }
+}
+
+#[tokio::test]
+async fn a_sharded_raffle_draws_across_every_counter() {
+    let Some(repo) = local_repo("draw-test").await else {
+        return;
+    };
+    let now = Utc::now();
+    let mut raffle = dated("split-2026", -10, -1, now);
+    raffle.shards = Some(2);
+    seed_raffle(&repo, &raffle).await;
+    repo.put_prize(&prize_for("split-2026", 1, RUNNER_UP_PENCE, 4)).await.unwrap();
+    for (order_id, quantity) in [("split-1", 3), ("split-2", 2), ("split-3", 4)] {
+        sell(&repo, &raffle, order_id, quantity, now).await;
+    }
+
+    let report = run(&repo, draw_of("split-2026"), draws([1, 9, 4, 6]), now).await.unwrap();
+
+    let draw = repo.get_draw("split-2026").await.unwrap().unwrap();
+    assert_eq!(
+        (draw.tickets_sold, draw.shard_counts.iter().sum::<u64>(), draw.shard_counts.len()),
+        (9, 9, 2),
+        "the draw freezes one count per counter and their sum is the universe"
+    );
+
+    let mut held = std::collections::BTreeSet::new();
+    for winner in &report.winners {
+        let holder = repo.find_entry_by_ticket("split-2026", winner.shard, winner.ticket_number).await.unwrap();
+        assert_eq!(
+            holder.map(|entry| entry.order_id),
+            Some(winner.order_id.clone()),
+            "winner {} names the order that holds its ticket",
+            winner.sequence
+        );
+        assert!(held.insert((winner.shard, winner.ticket_number)), "no ticket wins twice");
+    }
+    assert_eq!(report.winners.len(), 4, "one winner per prize slot");
 }

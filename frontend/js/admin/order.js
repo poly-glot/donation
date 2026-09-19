@@ -1,5 +1,5 @@
 import { el } from "../dom.js";
-import { at, inPounds } from "../format.js";
+import { at, inPounds, ticketLabel } from "../format.js";
 import { admin } from "./actions.js";
 import { facts, state } from "./markup.js";
 
@@ -14,7 +14,16 @@ function ticketRange(entry) {
         return NO_TICKETS_YET;
     }
 
-    return entry.ticketFrom === entry.ticketTo ? `${entry.ticketFrom}` : `${entry.ticketFrom} to ${entry.ticketTo}`;
+    const first = ticketLabel({ number: entry.ticketFrom, shard: entry.shard });
+    const last = ticketLabel({ number: entry.ticketTo, shard: entry.shard });
+
+    return entry.ticketFrom === entry.ticketTo ? first : `${first} to ${last}`;
+}
+
+function parseTicket(ticket) {
+    const [number, shard] = ticket.split("-").reverse();
+
+    return { shard: shard && Number(shard), ticketNumber: Number(number) };
 }
 
 function renderOrder(detail) {
@@ -45,6 +54,6 @@ export async function showOrder(orderId) {
     renderOrder(await admin("getOrder", { orderId }));
 }
 
-export async function showTicket(raffleId, ticketNumber) {
-    renderOrder(await admin("findTicket", { raffleId, ticketNumber: Number(ticketNumber) }));
+export async function showTicket(raffleId, ticket) {
+    renderOrder(await admin("findTicket", { raffleId, ...parseTicket(ticket) }));
 }

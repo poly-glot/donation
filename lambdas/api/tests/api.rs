@@ -287,9 +287,31 @@ async fn order_view_shows_the_ticket_range_once_the_webhook_has_allocated() {
 
     let paid = order_view(&api, &created.order_id).await;
     assert_eq!(paid.status, OrderStatus::Paid);
-    assert_eq!(paid.tickets, Some(TicketRange { from: 1, to: 15 }));
+    assert_eq!(paid.tickets, Some(TicketRange { shard: None, from: 1, to: 15 }));
     assert_eq!(paid.total_pence, created.total_pence, "the view reports what the checkout charged");
 
     let (status, body) = fetched(&api, "/orders/ord_missing").await;
     assert_eq!(status, 404, "an unknown order id: {body}");
+}
+
+#[tokio::test]
+async fn order_view_names_the_shard_on_a_sharded_raffle() {
+    let Some((api, repo, _)) = api().await else {
+        return;
+    };
+    let now = Utc::now();
+    let mut split = raffle("split-2026", -1, 100, now);
+    split.shards = Some(4);
+    seed_raffle(&repo, &split).await;
+    let created = create_order(&api, "split-2026", &eligible_order("ada@example.com", 15)).await;
+    let webhook_payment = debit_payment(format!("pi_{}", created.order_id), Some("4242"));
+    repo.allocate_entry(&created.order_id, &webhook_payment, now).await.unwrap();
+
+    let paid = order_view(&api, &created.order_id).await;
+    let tickets = paid.tickets.expect("tickets once allocated");
+    assert_eq!(
+        (tickets.shard.is_some(), tickets.from, tickets.to),
+        (true, 1, 15),
+        "the range names its shard and opens that shard's run"
+    );
 }

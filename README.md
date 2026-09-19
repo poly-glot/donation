@@ -141,18 +141,8 @@ costs a few pounds in unit-hours above the free 25.
 The stack is sized for a charity's launch morning rather than a ticket agency's: an email goes out, a
 few thousand supporters open the page within the hour, and a few hundred buy in the busiest minute.
 Each part has a known ceiling and a named way past it. The spec lists the design ceilings under
-"Deliberate simplifications and their ceilings"; this section puts measured numbers on them. Two ignored
-tests produce the measurements and rerun with the same Docker recipe as the suite:
-
-```bash
-cargo test -p stripe-webhook --test stress -- --ignored --nocapture
-cargo test -p shared --test shard -- --ignored --nocapture lost_rounds
-```
-
-Both run against DynamoDB Local, which commits a transaction in a few milliseconds where the real
-service takes twenty to forty, so the rates below are upper bounds and the shapes are the allocator's
-own. Pointing the same tests at a real region needs credentials, and they leave their on-demand tables
-behind.
+"Deliberate simplifications and their ceilings"; this section puts numbers on them, measured on the live
+site with the stress test described under "What the live site handles".
 
 ### What a sale costs
 
@@ -176,8 +166,9 @@ indexes project every attribute, so an index is written whenever an indexed row 
 
 A lost allocation round, a compare-and-set that failed because another sale landed first, is billed as
 well: the cancelled transaction consumes write capacity and its two consistent reads are spent. Under a
-burst the losers dominate the bill. In the measurement below, 160 simultaneous paid orders spent about
-five write units on lost rounds for every one on a successful allocation.
+burst the losers dominate the bill: in the contention test under "A sharded counter, measured", 160
+simultaneous paid orders spent about five write units on lost rounds for every one on a successful
+allocation.
 
 ### Where the ceilings are
 
@@ -186,9 +177,9 @@ five write units on lost rounds for every one on a successful allocation.
 | GSI1 writes      | 5 units, 5 per sale                             | about 1 sale a second sustained           |
 | table writes     | 15 units, 10 per sale                           | about 1.5 sales a second sustained        |
 | GSI2 writes      | 5 units, 2 per sale                             | about 2.5 sales a second sustained        |
-| Lambda           | the account's concurrency quota                 | 10 on a new account until raised          |
+| Lambda           | the account's concurrency quota                 | 10 on a new account; this account took 160 at once |
 | Stripe API       | 100 write requests a second in live mode        | 100 checkouts a second                    |
-| ticket counter   | one compare-and-set per raffle                  | any paced rate; about 80 arriving at once |
+| ticket counter   | one compare-and-set per raffle                  | about 30 paid orders a second on one raffle |
 | raffle partition | 1,000 write units a second on one partition key | about 160 allocations a second            |
 
 **Capacity is the first wall, and it is the index's.** Five write units on GSI1 against five writes per
@@ -205,26 +196,67 @@ the reserved concurrency of one on the scheduled functions is not in effect eith
 webhooks retrying through a throttle hold the same slots the checkout needs. Check Service Quotas the
 week before, not the morning of.
 
-**The counter is measured.** The stress test delivers `charge.succeeded` events straight to the webhook
-handler, skipping Stripe and the signature check, for one raffle:
+### What the live site handles
 
-| Delivery                   | Allocated  | Answered 500 | Latency p50 |
-|----------------------------|------------|--------------|-------------|
-| 40 at once                 | 40 of 40   | 0            | 0.37 s      |
-| 80 at once                 | 80 of 80   | 0            | 0.71 s      |
-| 160 at once                | 100 of 160 | 60           | 1.7 s       |
-| 320 at once                | 91 of 320  | 229          | 3.3 s       |
-| 10 a second for 5 seconds  | 50 of 50   | 0            | 15 ms       |
-| 50 a second for 5 seconds  | 250 of 250 | 0            | 7 ms        |
-| 100 a second for 5 seconds | 500 of 500 | 0            | 5 ms        |
+The numbers below come from a stress test run against `donation.junaid.guru` on 19 September 2026, with
+the database at its free capacity of 25 units. The test creates real orders through the site's checkout,
+then sends the webhook the same message Stripe sends when a card payment succeeds, signed the same way,
+at whatever rate we choose. It then checks that every order receives its tickets. Any message the
+webhook refuses is sent again five seconds later, which is what Stripe does in production.
 
-The counter copes with any rate it can drain and fails on simultaneity. The ten jittered attempts cover
-roughly eighty webhooks arriving in the same instant; beyond that the losers exhaust their attempts, the
-webhook answers 500 and Stripe redelivers the event minutes later, while the confirmation page gives up
-after sixty seconds and asks the supporter to reload. Numbers arrive late, never lost. Real payments are
-spread by human checkout time, so a few hundred buyers a minute reach the webhook a few a second, well
-inside the budget, and the subscription charge run charges one subscriber at a time, so its webhooks
-arrive spaced.
+| Orders sent               | Accepted first time | Refused first time | Typical wait for tickets | Slowest          | Got tickets on the resend |
+|---------------------------|---------------------|--------------------|--------------------------|------------------|---------------------------|
+| 40 in the same instant    | 35                  | 5                  | 1.3 seconds              | 1.8 seconds      | all 5                     |
+| 80 in the same instant    | 66                  | 14                 | 1.3 seconds              | 2.0 seconds      | all 14                    |
+| 160 in the same instant   | 117                 | 43                 | 2.6 seconds              | 4.0 seconds      | all 43                    |
+| 20 a second for 5 seconds | 100                 | 0                  | 60 milliseconds          | 160 milliseconds | not needed                |
+| 50 a second for 3 seconds | 93                  | 57                 | 0.24 seconds             | 2.4 seconds      | all 57                    |
+
+What this means in practice:
+
+- **A steady flow of 20 paid orders a second goes through without a single failure**, and each supporter
+  sees their ticket numbers within a fraction of a second. A charity's busiest minute is a few sales a
+  second, so there is a wide margin.
+- **The limit is about 30 paid orders a second on one raffle.** The live raffle has a single ticket
+  counter, every paid order updates it, and it can only be updated one order at a time, so 160 orders
+  arriving together take about five seconds to work through. A raffle can be created with several
+  counters instead; see "Several counters per raffle" below.
+- **Orders that arrive in the same instant can be refused the first time.** When 40 land together, about
+  one in eight is refused; when 160 land together, one in four. A refused order is not lost. Stripe sends
+  the message again a few minutes later, and in the test every refused order received its tickets on the
+  second attempt. The supporter's confirmation page stops waiting after a minute and asks them to
+  reload; their tickets are there when they do.
+- **The free database capacity is the next limit.** It sustains about one sale a second, with enough
+  reserve for a burst of about three hundred sales from idle, which covers the launch morning described
+  above. A rate above that for longer than the reserve lasts slows the checkout and the webhook until the
+  reserve refills.
+- **Nothing else limited the test.** The webhook function ran 160 copies at once without being refused,
+  so the account's Lambda concurrency is no longer the concern it is on a new account.
+
+If a launch is expected to run hotter than this:
+
+1. Raise the database capacity for the launch window, as described under "Where the ceilings are". That
+   lifts the one-sale-a-second sustained limit and costs a few pounds for the window.
+2. To go past about 30 paid orders a second on a single raffle, take the counter out of the race with the
+   queue described under "Reaching 200 paid orders a second". Nothing about the data changes.
+3. Ask Stripe for a higher live-mode rate limit and confirm the account's Lambda concurrency, both covered
+   in that section.
+
+To run the test yourself, put three values in `.env`: `STRESS_BASE_URL` is the site; `STRESS_WEBHOOK_URL`
+is the webhook endpoint subscribed in the Stripe dashboard; `STRESS_WEBHOOK_SECRET` is that endpoint's
+signing secret, which the dashboard shows and nothing else does. Then, with the same Docker recipe as
+the test suite and the three variables passed into the container:
+
+```bash
+set -a; . ./.env; set +a
+cargo test -p stripe-webhook --test stress -- --ignored --nocapture webhook_throughput_against_a_deployment
+```
+
+Each run leaves its sales behind: one made-up entrant per order with a single £1 ticket, marked paid with
+no Stripe charge behind it. Run it against a demo raffle only, never a live one. A gentler mode of the
+same test, `checkout_throughput_against_a_deployment`, pays each order through Stripe's test mode instead
+of signing the message itself; Stripe's test rate limit holds it to about ten sales a second, so it
+checks the whole journey rather than the limits.
 
 ### Reaching 200 paid orders a second
 
@@ -260,29 +292,34 @@ raffle's partition, and a partition writes a thousand units a second. DynamoDB s
 on its own, but not instantly, so a raffle expected to pass that rate wants its capacity raised the day
 before rather than the hour before.
 
-### A sharded counter, measured
+### Several counters per raffle
 
-If a queue is refused, the counter can be split instead. `shared::shard` keeps eight `COUNTER#` rows
-per raffle, each owning an eighth of the licence cap; an order hashes to a home shard and moves to the
-next one when its own is full; the ledger key becomes `ENTRY#{shard}#{offset}`; and the draw still picks
-one uniform integer in 1 to N, where N is the sum of the eight counts frozen in the draw record, mapped
-to a shard and an offset by prefix sums. It is not wired into any function. Its contention test races
-paid orders on one raffle and counts the compare-and-set rounds lost, median of five runs, with the
-orders that exhausted their ten attempts:
+A raffle can be created with several ticket counters instead of one. The "Ticket counters" field on the
+admin console's raffle form takes the number, it cannot change afterwards, and a raffle created without
+it keeps one counter, which is what the live raffle has. With eight counters, each owns an eighth of the
+licence cap; an order is assigned to one of them by its order id and moves to the next when its own is
+full; tickets are numbered within their counter, so a ticket reads as 3-412 rather than 412 on the
+confirmation page, in the admin console and in the ledger; and the draw still picks one number between 1
+and the total sold, then works out which counter and which ticket that number lands on from the counts
+frozen in the draw record. The raffle page's running totals are the sum of the counters.
 
-| Orders at once | One counter         | Eight shards |
-|----------------|---------------------|--------------|
-| 40             | 124, none exhausted | 50, none     |
-| 80             | 439, up to 3        | 151, none    |
-| 160            | 1,349, about half   | 562, none    |
+Eight counters mean eight times fewer orders queueing on any one of them, so a burst is refused far less
+often. Against a local copy of the database, racing orders on one raffle and counting how many times an
+order had to retry because another got there first, and how many orders gave up after their ten attempts:
 
-DynamoDB Local serialises every transaction through one lock, so the shards cannot commit in parallel
-there and the ratio understates the real service. What the shards buy is the exhaustion column. What
-they cost: eight contiguous runs instead of one, a shard-prefixed ticket label, a tail of at most eight
-times one less than the per-order maximum that can stay unsold at the cap, and, before a real run, a
-partition key per shard so the shards spread across partitions rather than sharing the raffle's. The
-queue keeps one gapless run and costs less to write, so it stays the first choice when launch money is
-being spent; the shards are the measured fallback.
+| Orders at once | One counter, retries and orders that gave up | Eight counters, retries and orders that gave up |
+|----------------|----------------------------------------------|-------------------------------------------------|
+| 40             | 124, none gave up                            | 50, none                                        |
+| 80             | 439, up to 3 gave up                         | 151, none                                       |
+| 160            | 1,349, about half gave up                    | 562, none                                       |
+
+The local copy runs one transaction at a time, so the eight counters could not work in parallel there;
+on the real service each counter has its own partition, so they do. The cost is eight runs of ticket
+numbers instead of one, the longer label, and up to 152 tickets that can stay unsold when the raffle
+reaches its cap. The queue keeps one run of numbers and costs less to write, so it stays the first
+choice when a launch is being paid for; the counters are the setting to reach for when a queue is not
+wanted. To measure a counters raffle on the live site, create one and run the stress test above with
+`STRESS_RAFFLE_ID` naming it.
 
 The other ceilings, the subscription charge run at a few thousand subscribers a raffle and the
 reconciliation's 48-hour window, are listed with their upgrade paths in the spec.

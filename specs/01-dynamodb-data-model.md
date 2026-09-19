@@ -86,6 +86,8 @@ GSI2 has no sort key. PaymentIntent lookups are exact, and subscription pages ne
 | Raffle               | `donation#RAFFLE#{raffleId}`    | `#METADATA`             | `donation#RAFFLES`       | `{opensAt}#{raffleId}`             |                          |
 | Prize tier           | `donation#RAFFLE#{raffleId}`    | `PRIZE#{rank:04}`       |                          |                                    |                          |
 | Entry (ticket run)   | `donation#RAFFLE#{raffleId}`    | `ENTRY#{ticketFrom:08}` | `donation#ENTRANT#{id}`  | `ENTRY#{raffleId}#{ticketFrom:08}` |                          |
+| Ticket counter       | `donation#RAFFLE#{raffleId}#{shard:02}` | `#COUNTER`      |                          |                                    |                          |
+| Entry on a counter   | `donation#RAFFLE#{raffleId}#{shard:02}` | `ENTRY#{ticketFrom:08}` | `donation#ENTRANT#{id}` | `ENTRY#{raffleId}#{shard:02}#{ticketFrom:08}` |                |
 | Draw record          | `donation#RAFFLE#{raffleId}`    | `#DRAW`                 |                          |                                    |                          |
 | Winner               | `donation#RAFFLE#{raffleId}`    | `WINNER#{seq:04}`       | `donation#ENTRANT#{id}`  | `WINNER#{raffleId}#{seq:04}`       |                          |
 | Entrant profile      | `donation#ENTRANT#{entrantId}`  | `#PROFILE`              | `donation#EMAIL#{email}` | `#PROFILE`                         |                          |
@@ -123,6 +125,7 @@ truth. Optional attributes are absent rather than null.
 | `ticketRevenuePence`     | `2500`                                         | lottery proceeds, reported to the Gambling Commission        |
 | `donationPence`          | `500`                                          | voluntary donations, not lottery proceeds                    |
 | `subscriptionsChargedAt` | absent until charged                           | guards the one-shot subscription charge run                  |
+| `shards`                 | absent, or `8`                                 | absent: this row is the ticket counter; a number: that many counter rows, each in its own partition with an equal share of `maxTickets`, and the three totals on this row stay zero |
 | `createdAt`              |                                                |                                                              |
 
 Dates must run `opensAt < closesAt <= drawAt <= resultsAt`.
@@ -179,6 +182,10 @@ One row per paid order: `ticketFrom`, `ticketTo`, `orderId`, `entrantId` and `al
 gapless across a raffle. "Who holds ticket N" is one query: the raffle partition, sort keys from `ENTRY#00000001` to
 `ENTRY#{N}`, descending, limit one, then check that the range covers N.
 
+On a raffle with `shards` the row also carries `shard`, lives in that counter's partition, and its numbers are
+contiguous within the counter rather than across the raffle. Such a ticket is named `{shard}-{number}` everywhere it is
+shown, and it is found by the same query against the counter's partition.
+
 ### Subscription
 
 | Attribute                                   | Notes                                                                                                                                                          |
@@ -197,10 +204,12 @@ make the charge exactly once per subscription and raffle.
 ### Draw and winner
 
 The draw record holds `drawnAt`, `ticketsSold` at draw time, `method` (`os-csprng-uniform-rejection`),
-`conductedBy` and `witnessedBy?`. It is written once, in a transaction that also sets `drawnAt` on the raffle.
+`conductedBy` and `witnessedBy?`. It is written once, in a transaction that also sets `drawnAt` on the raffle. On a
+sharded raffle it also holds `shardCounts`, one count per counter whose sum is `ticketsSold`; a drawn number between 1
+and `ticketsSold` maps to a counter and a ticket by prefix sums over them, so the draw stays one uniform pick.
 
 Each winner row holds `sequence`, `prizeRank`, `prizeAmountPence`, `ticketNumber`, `orderId`,
-`entrantId` and `status`. Status moves from `PENDING` to `NOTIFIED` to `PAID`, or to `UNCLAIMED`, by admin action. The
+`entrantId` and `status`, plus `shard` on a sharded raffle, where `ticketNumber` counts within that counter. Status moves from `PENDING` to `NOTIFIED` to `PAID`, or to `UNCLAIMED`, by admin action. The
 table stream records when each transition happened.
 
 ## Access patterns
@@ -222,6 +231,8 @@ table stream records when each transition happened.
 | 13 | Record the draw once                                    | transaction: put `#DRAW` and set `drawnAt`, both conditional on absence                                                                           |
 | 14 | Winners list                                            | raffle partition, `WINNER#` prefix                                                                                                                |
 | 15 | Order status for the payment page                       | get the order, then GSI1 entrant partition with the `ENTRY#` prefix, matched on order id                                                          |
+| 16 | Totals of a sharded raffle                              | one consistent batch get of its `#COUNTER` rows, summed; a raffle without shards reads its own row                                                |
+| 17 | Owner of ticket N on a counter                          | pattern 9 against the counter's partition                                                                                                         |
 
 ## Flows
 
@@ -258,7 +269,10 @@ table stream records when each transition happened.
     - Read the order with a consistent read. Already `PAID` means "already paid"; any state other than
       `PENDING` is a conflict.
     - Read the raffle with a consistent read. The new range is `ticketsSold + 1` to
-      `ticketsSold + quantity`. If that passes `maxTickets` the result is "sold out".
+      `ticketsSold + quantity`. If that passes `maxTickets` the result is "sold out". On a raffle with `shards`, the
+      order id picks a home counter, the first counter from there with room for the whole run is read instead, and the
+      transaction moves that counter rather than the raffle row. A run never straddles counters, so such a raffle is
+      sold out only when no counter can hold the whole run.
     - One transaction with three items: update the raffle, setting `ticketsSold` to the range end and adding the revenue
       and donation, conditional on `ticketsSold` still holding the value read; put the entry row, conditional on
       absence; update the order to `PAID` with `paidAt`, `cardFunding` and
@@ -302,7 +316,8 @@ table stream records when each transition happened.
 2. The draw is claimed atomically: the draw row is put and `drawnAt` set on the raffle, both conditional on absence.
    `ticketsSold` is snapshotted as the draw universe, so allocations that land after this point never enter the draw.
 3. Prize tiers expand to one slot per prize in rank order. For each slot a ticket number is drawn uniformly from one to
-   `ticketsSold` using operating-system entropy with rejection sampling, so there is no modulo bias. The ticket's entry
+   `ticketsSold` using operating-system entropy with rejection sampling, so there is no modulo bias. On a sharded raffle
+   the drawn number is mapped to a counter and a ticket through the frozen `shardCounts`. The ticket's entry
    is looked up, and the draw moves on if the ticket has already won or its order is not `PAID`. Up to a thousand
    redraws are allowed per prize. The winner is written conditional on its sequence number.
 4. The run is resumable. A raffle already drawn continues from the number of winners recorded so far, using the draw
@@ -311,9 +326,12 @@ table stream records when each transition happened.
 
 ### Admin actions (`admin` Lambda, invoked with IAM credentials)
 
-`createRaffle` is conditional on absence. `updateRaffle` takes the same full input, keeps the counters and the created
-and drawn timestamps, refuses a price change once tickets are sold, validates the date order, and writes back
-conditional on `ticketsSold` so a concurrent sale is never overwritten.
+`createRaffle` is conditional on absence and takes an optional `shards`, writing the counter rows before the raffle so
+a retry never leaves a raffle without them. `updateRaffle` takes the same full input, keeps the counters and the created
+and drawn timestamps, refuses a price change once tickets are sold, refuses to change `shards` at all and `maxTickets`
+on a sharded raffle because the caps live on the counters, validates the date order, and writes back
+conditional on `ticketsSold` so a concurrent sale is never overwritten. `listEntries` and `findTicket` take a `shard`
+on a sharded raffle.
 `putPrize` adds or replaces a tier and `removePrize` deletes one by rank; both first read the raffle, so a tier can
 never be written into a partition that has no raffle and the advertised prize table cannot change after the draw.
 `cancelSubscription` is the phone cancellation. `setWinnerStatus`
@@ -333,8 +351,8 @@ attribute in this table is a string, so the round trip is exact. A cursor carrie
 For every live raffle, meaning one not yet drawn or drawn within the last 30 days:
 
 - revenue must equal tickets sold times the ticket price, and tickets sold must not exceed the cap;
-- the ledger is walked in full for gaps, and its last ticket must not pass `ticketsSold`, nor fall short of it once the
-  raffle has closed;
+- the ledger is walked in full for gaps, counter by counter on a sharded raffle, and each run's last ticket must not
+  pass what its counter says is sold, nor fall short of it once the raffle has closed;
 - entries allocated in the last 48 hours must have an order that is `PAID` or `REFUNDED`;
 - once the raffle has been open for a day, every due active subscriber must have an order for it carrying a
   PaymentIntent.
@@ -417,13 +435,14 @@ functions, the site, public URLs for `api` and `stripe-webhook`, the schedules, 
 ## Deliberate simplifications and their ceilings
 
 - **A compare-and-set counter instead of a single-writer queue.** Every paid order on a raffle is serialised on one
-  item. Measured against DynamoDB Local, the counter drains any paced rate it was offered, but its ten jittered attempts
-  cover about eighty webhooks arriving in the same instant; past that the losers answer 500 and Stripe redelivers them
-  minutes later. At the free 25 units the indexes throttle first, at about one sale a second sustained with a bank of
+  item. Measured on the deployment, the counter drains about thirty allocations a second, and a same-instant burst of
+  forty already loses one in eight to its ten jittered attempts; the losers answer 500 and Stripe redelivers them
+  minutes later, so numbers arrive late and are never lost. At the free 25 units the indexes throttle first, at about one sale a second sustained with a bank of
   about three hundred. Past that, route payment events through a FIFO queue keyed by raffle so one consumer allocates
-  per raffle, and drop the retry loop. `shared::shard` is the measured no-queue alternative, eight counters per raffle
-  with a prefix-sum draw, not wired into any function; it strands at most eight times one less than the per-order
-  maximum at the cap and needs a partition key per shard before a real run.
+  per raffle, and drop the retry loop. Or create the raffle with `shards`: eight counters, each in its own partition,
+  cut the queueing on any one item eightfold, at the cost of eight runs of numbers, a `{shard}-{number}` ticket label,
+  and up to eight times one less than the per-order maximum staying unsold at the cap, because a run never straddles
+  counters.
 - **The subscription charge run calls Stripe one subscriber at a time inside one Lambda.** Fine to a few thousand
   subscribers per raffle. Because the run is resumable, larger lists finish over several hourly runs. Past that, fan out
   one queue message per subscription and let the consumer create the order and charge.
