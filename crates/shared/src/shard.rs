@@ -1,36 +1,17 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use aws_sdk_dynamodb::types::{Put, TransactWriteItem, Update};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::entrant::entrant_pk;
 use crate::error::AppError;
-use crate::order::{
-    ALLOCATION_ATTEMPTS, ALLOCATION_BACKOFF_STEP, AllocationConflict, Order, OrderStatus, PaidPayment, allocation_conflict, jittered, order_pk,
-};
-use crate::raffle::{Raffle, raffle_pk};
-use crate::table::{DynamoRepo, METADATA_SK, item, n, s};
+use crate::order::Order;
+use crate::raffle::Raffle;
+use crate::table::{DynamoRepo, condition_failed_as_false, partition};
 
-fn counter_sk(shard: u32) -> String {
-    format!("COUNTER#{shard:02}")
-}
+pub const MAX_SHARDS: u32 = 99;
+pub(crate) const COUNTER_SK: &str = "#COUNTER";
 
-fn entry_sk(shard: u32, offset: u64) -> String {
-    format!("ENTRY#{shard:02}#{offset:08}")
-}
-
-fn entrant_entry_gsi1sk(raffle_id: &str, shard: u32, offset: u64) -> String {
-    format!("ENTRY#{raffle_id}#{shard:02}#{offset:08}")
-}
-
-fn entry_keys(entry: &ShardedEntry) -> Vec<(&'static str, String)> {
-    vec![
-        ("PK", raffle_pk(&entry.raffle_id)),
-        ("SK", entry_sk(entry.shard, entry.offset_from)),
-        ("GSI1PK", entrant_pk(&entry.entrant_id)),
-        ("GSI1SK", entrant_entry_gsi1sk(&entry.raffle_id, entry.shard, entry.offset_from)),
-    ]
+pub(crate) fn shard_pk(raffle_id: &str, shard: u32) -> String {
+    partition("RAFFLE", format!("{raffle_id}#{shard:02}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +21,8 @@ pub struct Counter {
     pub shard: u32,
     pub sold: u64,
     pub cap: u64,
+    pub ticket_revenue_pence: u64,
+    pub donation_pence: u64,
 }
 
 impl Counter {
@@ -48,29 +31,17 @@ impl Counter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShardedEntry {
-    pub raffle_id: String,
-    pub order_id: String,
-    pub entrant_id: String,
-    pub shard: u32,
-    pub offset_from: u64,
-    pub offset_to: u64,
-    pub allocated_at: DateTime<Utc>,
-}
+impl Raffle {
+    pub fn summed(mut self, counters: &[Counter]) -> Self {
+        if self.shards.is_none() {
+            return self;
+        }
 
-impl ShardedEntry {
-    pub fn contains(&self, offset: u64) -> bool {
-        (self.offset_from..=self.offset_to).contains(&offset)
+        self.tickets_sold = counters.iter().map(|counter| counter.sold).sum();
+        self.ticket_revenue_pence = counters.iter().map(|counter| counter.ticket_revenue_pence).sum();
+        self.donation_pence = counters.iter().map(|counter| counter.donation_pence).sum();
+        self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ShardedAllocation {
-    Allocated(ShardedEntry),
-    AlreadyPaid,
-    SoldOut,
 }
 
 pub fn shard_of(order_id: &str, shards: u32) -> u32 {
@@ -101,71 +72,65 @@ pub fn locate(counts: &[u64], ticket: u64) -> Option<(u32, u64)> {
     None
 }
 
+pub fn draw_number(counts: &[u64], shard: u32, number: u64) -> u64 {
+    counts.iter().take(shard as usize).sum::<u64>() + number
+}
+
 impl DynamoRepo {
-    pub async fn create_counters(&self, raffle: &Raffle, shards: u32) -> Result<(), AppError> {
+    pub async fn create_counters(&self, raffle: &Raffle) -> Result<(), AppError> {
+        let Some(shards) = raffle.shards else {
+            return Ok(());
+        };
+
         for (shard, cap) in caps(raffle.max_tickets, shards).into_iter().enumerate() {
             let counter = Counter {
                 raffle_id: raffle.raffle_id.clone(),
                 shard: shard as u32,
                 sold: 0,
                 cap,
+                ticket_revenue_pence: 0,
+                donation_pence: 0,
             };
-            let keys = [("PK", raffle_pk(&raffle.raffle_id)), ("SK", counter_sk(counter.shard))];
+            let keys = [("PK", shard_pk(&raffle.raffle_id, counter.shard)), ("SK", COUNTER_SK.into())];
 
-            self.put(&counter, &keys, Some("attribute_not_exists(PK)")).await?;
+            condition_failed_as_false(self.put(&counter, &keys, Some("attribute_not_exists(PK)")).await)?;
         }
 
         Ok(())
     }
 
-    pub async fn counters(&self, raffle_id: &str) -> Result<Vec<Counter>, AppError> {
-        self.query_prefix(raffle_pk(raffle_id), "COUNTER#", false, None, None).await?.all()
-    }
+    pub async fn counters(&self, raffle: &Raffle) -> Result<Vec<Counter>, AppError> {
+        let Some(shards) = raffle.shards else {
+            return Ok(Vec::new());
+        };
+        let keys = (0..shards).map(|shard| (shard_pk(&raffle.raffle_id, shard), COUNTER_SK.to_string())).collect();
 
-    pub async fn allocate_sharded(&self, order_id: &str, payment: &PaidPayment, now: DateTime<Utc>, shards: u32) -> Result<(ShardedAllocation, u32), AppError> {
-        for attempt in 1..=ALLOCATION_ATTEMPTS {
-            let Some(order): Option<Order> = self.get(order_pk(order_id), METADATA_SK, true).await? else {
-                return Err(AppError::NotFound(format!("order {order_id}")));
-            };
-            match order.status {
-                OrderStatus::Pending => {}
-                OrderStatus::Paid => return Ok((ShardedAllocation::AlreadyPaid, attempt)),
-                other => return Err(AppError::Conflict(format!("order {order_id} is {other:?}"))),
-            }
-
-            let Some(counter) = self.counter_with_room(&order, shards).await? else {
-                return Ok((ShardedAllocation::SoldOut, attempt));
-            };
-            let entry = ShardedEntry {
-                raffle_id: order.raffle_id.clone(),
-                order_id: order.order_id.clone(),
-                entrant_id: order.entrant_id.clone(),
-                shard: counter.shard,
-                offset_from: counter.sold + 1,
-                offset_to: counter.sold + u64::from(order.ticket_quantity),
-                allocated_at: now,
-            };
-
-            match self.commit_sharded(&order, counter.sold, &entry, payment, now).await {
-                Ok(()) => return Ok((ShardedAllocation::Allocated(entry), attempt)),
-                Err(err) => match allocation_conflict(&err) {
-                    Some(AllocationConflict::OrderNotPending) => return Ok((ShardedAllocation::AlreadyPaid, attempt)),
-                    Some(AllocationConflict::Retryable) => tokio::time::sleep(jittered(ALLOCATION_BACKOFF_STEP * attempt)).await,
-                    None => return Err(err),
-                },
-            }
+        let mut counters: Vec<Counter> = self.batch_get(keys, true).await?;
+        if counters.len() != shards as usize {
+            return Err(AppError::Internal(format!(
+                "raffle {} has {} of {shards} counters",
+                raffle.raffle_id,
+                counters.len()
+            )));
         }
+        counters.sort_by_key(|counter| counter.shard);
 
-        Err(AppError::Conflict(format!("ticket counter contention allocating order {order_id}")))
+        Ok(counters)
     }
 
-    async fn counter_with_room(&self, order: &Order, shards: u32) -> Result<Option<Counter>, AppError> {
+    pub async fn with_totals(&self, raffle: Raffle) -> Result<Raffle, AppError> {
+        let counters = self.counters(&raffle).await?;
+
+        Ok(raffle.summed(&counters))
+    }
+
+    pub(crate) async fn counter_with_room(&self, raffle: &Raffle, order: &Order, shards: u32) -> Result<Option<Counter>, AppError> {
         let home = shard_of(&order.order_id, shards);
 
         for probe in 0..shards {
             let shard = (home + probe) % shards;
-            let Some(counter): Option<Counter> = self.get(raffle_pk(&order.raffle_id), &counter_sk(shard), true).await? else {
-                return Err(AppError::NotFound(format!("counter {shard} of raffle {}", order.raffle_id)));
+            let Some(counter): Option<Counter> = self.get(shard_pk(&raffle.raffle_id, shard), COUNTER_SK, true).await? else {
+                return Err(AppError::NotFound(format!("counter {shard} of raffle {}", raffle.raffle_id)));
             };
 
             if counter.has_room_for(order.ticket_quantity) {
@@ -175,56 +140,6 @@ impl DynamoRepo {
 
         Ok(None)
     }
-
-    async fn commit_sharded(&self, order: &Order, sold_before: u64, entry: &ShardedEntry, payment: &PaidPayment, now: DateTime<Utc>) -> Result<(), AppError> {
-        let counter_update = Update::builder()
-            .table_name(self.table())
-            .key("PK", s(raffle_pk(&entry.raffle_id)))
-            .key("SK", s(counter_sk(entry.shard)))
-            .update_expression("SET sold = :to")
-            .condition_expression("sold = :read")
-            .expression_attribute_values(":read", n(sold_before))
-            .expression_attribute_values(":to", n(entry.offset_to))
-            .build()?;
-
-        let entry_put = Put::builder()
-            .table_name(self.table())
-            .set_item(Some(item(entry, &entry_keys(entry))?))
-            .condition_expression("attribute_not_exists(PK)")
-            .build()?;
-
-        let order_update = self.paid_order_update(order, payment, now)?;
-
-        self.client()
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(counter_update).build())
-            .transact_items(TransactWriteItem::builder().put(entry_put).build())
-            .transact_items(TransactWriteItem::builder().update(order_update).build())
-            .send()
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn find_sharded_entry(&self, raffle_id: &str, shard: u32, offset: u64) -> Result<Option<ShardedEntry>, AppError> {
-        let candidate: Option<ShardedEntry> = self
-            .query(
-                None,
-                "PK = :pk AND SK BETWEEN :first AND :last",
-                vec![
-                    (":pk", s(raffle_pk(raffle_id))),
-                    (":first", s(entry_sk(shard, 1))),
-                    (":last", s(entry_sk(shard, offset))),
-                ],
-                true,
-                Some(1),
-                None,
-            )
-            .await?
-            .first()?;
-
-        Ok(candidate.filter(|entry| entry.contains(offset)))
-    }
 }
 
 #[cfg(test)]
@@ -232,6 +147,18 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::testing::winter;
+
+    fn counter(shard: u32, sold: u64, revenue: u64, donation: u64) -> Counter {
+        Counter {
+            raffle_id: "winter-2026".into(),
+            shard,
+            sold,
+            cap: 625_000,
+            ticket_revenue_pence: revenue,
+            donation_pence: donation,
+        }
+    }
 
     #[test]
     fn locate_is_a_bijection_from_draw_numbers_onto_physical_tickets() {
@@ -257,6 +184,21 @@ mod tests {
     }
 
     #[test]
+    fn draw_number_inverts_locate() {
+        let counts = [4, 0, 7, 1, 3];
+        let universe: u64 = counts.iter().sum();
+
+        for ticket in 1..=universe {
+            let (shard, number) = locate(&counts, ticket).expect("inside the universe");
+            assert_eq!(
+                draw_number(&counts, shard, number),
+                ticket,
+                "ticket {number} of shard {shard} is draw number {ticket}"
+            );
+        }
+    }
+
+    #[test]
     fn caps_split_the_licence_limit_exactly_across_shards() {
         let cases = [
             ("the remainder goes to the first shards", 10, 4, vec![3, 3, 2, 2]),
@@ -269,6 +211,27 @@ mod tests {
 
             assert_eq!(split, expected, "{label}");
             assert_eq!(split.iter().sum::<u64>(), max_tickets, "{label}: the caps add up to the limit");
+        }
+    }
+
+    #[test]
+    fn totals_come_from_the_row_or_from_the_counters() {
+        let mut sold_on_the_row = winter();
+        sold_on_the_row.tickets_sold = 25;
+        sold_on_the_row.ticket_revenue_pence = 2_500;
+        sold_on_the_row.donation_pence = 500;
+        let mut sharded = winter();
+        sharded.shards = Some(2);
+        let counters = [counter(0, 10, 1_000, 200), counter(1, 15, 1_500, 300)];
+
+        let cases = [
+            ("a raffle without shards keeps its own row", sold_on_the_row, &counters[..0], (25, 2_500, 500)),
+            ("a sharded raffle sums its counters", sharded, &counters[..], (25, 2_500, 500)),
+        ];
+
+        for (label, raffle, counters, expected) in cases {
+            let raffle = raffle.summed(counters);
+            assert_eq!((raffle.tickets_sold, raffle.ticket_revenue_pence, raffle.donation_pence), expected, "{label}");
         }
     }
 }

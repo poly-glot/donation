@@ -9,6 +9,7 @@ use shared::error::AppError;
 use shared::http::{answered, authorise, body};
 use shared::order::{Entry, Order};
 use shared::raffle::{Prize, Raffle, RaffleStatus};
+use shared::shard::MAX_SHARDS;
 use shared::subscription::{Subscription, SubscriptionStatus};
 use shared::table::{DynamoRepo, page_cursor, page_key};
 
@@ -18,20 +19,52 @@ const PAGE_SIZE: i32 = 50;
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AdminRequest {
     ListRaffles,
-    GetRaffle { raffle_id: String },
-    ListEntries { raffle_id: String, cursor: Option<String> },
-    GetOrder { order_id: String },
-    FindTicket { raffle_id: String, ticket_number: u64 },
-    FindEntrant { email: String },
-    GetEntrant { entrant_id: String },
-    ListSubscriptions { status: SubscriptionStatus, cursor: Option<String> },
+    GetRaffle {
+        raffle_id: String,
+    },
+    ListEntries {
+        raffle_id: String,
+        #[serde(default)]
+        shard: Option<u32>,
+        cursor: Option<String>,
+    },
+    GetOrder {
+        order_id: String,
+    },
+    FindTicket {
+        raffle_id: String,
+        #[serde(default)]
+        shard: Option<u32>,
+        ticket_number: u64,
+    },
+    FindEntrant {
+        email: String,
+    },
+    GetEntrant {
+        entrant_id: String,
+    },
+    ListSubscriptions {
+        status: SubscriptionStatus,
+        cursor: Option<String>,
+    },
     CreateRaffle(RaffleInput),
     UpdateRaffle(RaffleInput),
     PutPrize(Prize),
-    RemovePrize { raffle_id: String, rank: u32 },
-    SetWinnerStatus { raffle_id: String, sequence: u32, status: WinnerStatus },
-    CancelSubscription { subscription_id: String },
-    EraseEntrant { entrant_id: String },
+    RemovePrize {
+        raffle_id: String,
+        rank: u32,
+    },
+    SetWinnerStatus {
+        raffle_id: String,
+        sequence: u32,
+        status: WinnerStatus,
+    },
+    CancelSubscription {
+        subscription_id: String,
+    },
+    EraseEntrant {
+        entrant_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +79,8 @@ pub struct RaffleInput {
     pub closes_at: DateTime<Utc>,
     pub draw_at: DateTime<Utc>,
     pub results_at: DateTime<Utc>,
+    #[serde(default)]
+    pub shards: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,14 +146,21 @@ impl RaffleInput {
             ticket_revenue_pence: 0,
             donation_pence: 0,
             subscriptions_charged_at: None,
+            shards: self.shards,
             created_at: now,
         }
     }
 }
 
-pub fn updated_raffle(existing: &Raffle, input: RaffleInput) -> Result<Raffle, AppError> {
-    if existing.tickets_sold > 0 && input.ticket_price_pence != existing.ticket_price_pence {
+pub fn updated_raffle(existing: &Raffle, tickets_sold: u64, input: RaffleInput) -> Result<Raffle, AppError> {
+    if tickets_sold > 0 && input.ticket_price_pence != existing.ticket_price_pence {
         return Err(AppError::BadRequest("ticketPricePence cannot change once tickets are sold".into()));
+    }
+    if input.shards != existing.shards {
+        return Err(AppError::BadRequest("shards cannot change once the raffle exists".into()));
+    }
+    if existing.shards.is_some() && input.max_tickets != existing.max_tickets {
+        return Err(AppError::BadRequest("maxTickets cannot change on a sharded raffle".into()));
     }
 
     let raffle = Raffle {
@@ -145,6 +187,9 @@ pub fn validate_raffle(raffle: &Raffle) -> Result<(), AppError> {
         return Err(AppError::BadRequest(
             "ticketPricePence, maxTicketsPerOrder and maxTickets must be positive".into(),
         ));
+    }
+    if raffle.shards.is_some_and(|shards| !(1..=MAX_SHARDS).contains(&shards)) {
+        return Err(AppError::BadRequest(format!("shards must be between 1 and {MAX_SHARDS}")));
     }
     if raffle.max_tickets < raffle.tickets_sold {
         return Err(AppError::BadRequest("maxTickets is below tickets already sold".into()));
@@ -182,9 +227,13 @@ pub async fn run(repo: &DynamoRepo, request: AdminRequest, now: DateTime<Utc>) -
     match request {
         AdminRequest::ListRaffles => list_raffles(repo, now).await,
         AdminRequest::GetRaffle { raffle_id } => get_raffle(repo, &raffle_id, now).await,
-        AdminRequest::ListEntries { raffle_id, cursor } => list_entries(repo, &raffle_id, cursor).await,
+        AdminRequest::ListEntries { raffle_id, shard, cursor } => list_entries(repo, &raffle_id, shard, cursor).await,
         AdminRequest::GetOrder { order_id } => get_order(repo, &order_id).await,
-        AdminRequest::FindTicket { raffle_id, ticket_number } => find_ticket(repo, &raffle_id, ticket_number).await,
+        AdminRequest::FindTicket {
+            raffle_id,
+            shard,
+            ticket_number,
+        } => find_ticket(repo, &raffle_id, shard, ticket_number).await,
         AdminRequest::FindEntrant { email } => find_entrant(repo, &email).await,
         AdminRequest::GetEntrant { entrant_id } => get_entrant(repo, &entrant_id).await,
         AdminRequest::ListSubscriptions { status, cursor } => list_subscriptions(repo, status, cursor).await,
@@ -199,15 +248,14 @@ pub async fn run(repo: &DynamoRepo, request: AdminRequest, now: DateTime<Utc>) -
 }
 
 async fn list_raffles(repo: &DynamoRepo, now: DateTime<Utc>) -> Result<Value, AppError> {
-    let rows: Vec<RaffleRow> = repo
-        .list_raffles()
-        .await?
-        .into_iter()
-        .map(|raffle| RaffleRow {
+    let mut rows = Vec::new();
+    for raffle in repo.list_raffles().await? {
+        let raffle = repo.with_totals(raffle).await?;
+        rows.push(RaffleRow {
             status: raffle.status_at(now),
             raffle,
-        })
-        .collect();
+        });
+    }
 
     Ok(json!(rows))
 }
@@ -216,6 +264,7 @@ async fn get_raffle(repo: &DynamoRepo, raffle_id: &str, now: DateTime<Utc>) -> R
     let Some(raffle) = repo.get_raffle(raffle_id).await? else {
         return Err(AppError::NotFound(format!("raffle {raffle_id}")));
     };
+    let raffle = repo.with_totals(raffle).await?;
 
     let prizes = repo.list_prizes(raffle_id).await?;
     let draw = repo.get_draw(raffle_id).await?;
@@ -230,9 +279,9 @@ async fn get_raffle(repo: &DynamoRepo, raffle_id: &str, now: DateTime<Utc>) -> R
     }))
 }
 
-async fn list_entries(repo: &DynamoRepo, raffle_id: &str, cursor: Option<String>) -> Result<Value, AppError> {
+async fn list_entries(repo: &DynamoRepo, raffle_id: &str, shard: Option<u32>, cursor: Option<String>) -> Result<Value, AppError> {
     let start = cursor.as_deref().map(page_key).transpose()?;
-    let (entries, last_key) = repo.list_entries(raffle_id, PAGE_SIZE, start).await?;
+    let (entries, last_key) = repo.list_entries(raffle_id, shard, PAGE_SIZE, start).await?;
 
     Ok(json!({ "entries": entries, "cursor": last_key.as_ref().map(page_cursor).transpose()? }))
 }
@@ -250,8 +299,8 @@ async fn get_order(repo: &DynamoRepo, order_id: &str) -> Result<Value, AppError>
     order_detail(repo, order, entry).await
 }
 
-async fn find_ticket(repo: &DynamoRepo, raffle_id: &str, ticket_number: u64) -> Result<Value, AppError> {
-    let Some(entry) = repo.find_entry_by_ticket(raffle_id, ticket_number).await? else {
+async fn find_ticket(repo: &DynamoRepo, raffle_id: &str, shard: Option<u32>, ticket_number: u64) -> Result<Value, AppError> {
+    let Some(entry) = repo.find_entry_by_ticket(raffle_id, shard, ticket_number).await? else {
         return Err(AppError::NotFound(format!("ticket {ticket_number} of raffle {raffle_id}")));
     };
     let Some(order) = repo.get_order(&entry.order_id).await? else {
@@ -314,6 +363,7 @@ async fn list_subscriptions(repo: &DynamoRepo, status: SubscriptionStatus, curso
 async fn create_raffle(repo: &DynamoRepo, input: RaffleInput, now: DateTime<Utc>) -> Result<Value, AppError> {
     let raffle = input.into_raffle(now);
     validate_raffle(&raffle)?;
+    repo.create_counters(&raffle).await?;
     if !repo.create_raffle(&raffle).await? {
         return Err(AppError::Conflict(format!("raffle {} already exists", raffle.raffle_id)));
     }
@@ -324,7 +374,8 @@ async fn update_raffle(repo: &DynamoRepo, input: RaffleInput) -> Result<Value, A
     let Some(existing) = repo.get_raffle(&input.raffle_id).await? else {
         return Err(AppError::NotFound(format!("raffle {}", input.raffle_id)));
     };
-    let raffle = updated_raffle(&existing, input)?;
+    let tickets_sold = repo.with_totals(existing.clone()).await?.tickets_sold;
+    let raffle = updated_raffle(&existing, tickets_sold, input)?;
 
     if !repo.replace_raffle(&raffle, existing.tickets_sold).await? {
         return Err(AppError::Conflict("raffle changed while updating, retry".into()));
@@ -415,6 +466,7 @@ mod tests {
             closes_at: at(2027, 1, 8),
             draw_at: at(2027, 1, 22),
             results_at: at(2027, 2, 5),
+            shards: None,
         }
     }
 
@@ -472,14 +524,17 @@ mod tests {
         let mut change = input();
         change.name = "Renamed".into();
         change.closes_at = at(2027, 1, 15);
-        let updated = updated_raffle(&existing, change).unwrap();
+        let updated = updated_raffle(&existing, existing.tickets_sold, change).unwrap();
         assert_eq!((updated.name.as_str(), updated.closes_at), ("Renamed", at(2027, 1, 15)));
         assert_eq!((updated.tickets_sold, updated.ticket_revenue_pence), (10, 1_000));
         assert_eq!(updated.created_at, existing.created_at);
 
         let mut repriced = input();
         repriced.ticket_price_pence = 200;
-        assert!(matches!(updated_raffle(&existing, repriced), Err(AppError::BadRequest(_))));
+        assert!(matches!(
+            updated_raffle(&existing, existing.tickets_sold, repriced),
+            Err(AppError::BadRequest(_))
+        ));
     }
 
     #[test]

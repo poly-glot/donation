@@ -103,22 +103,18 @@ impl LedgerWalk {
         ))
     }
 
-    pub fn finish(&self, raffle: &Raffle, now: DateTime<Utc>) -> Option<Violation> {
-        if self.last_ticket > raffle.tickets_sold {
-            return Some(violation(
-                "ledger-overrun",
-                &raffle.raffle_id,
-                format!("entries reach {} but ticketsSold is {}", self.last_ticket, raffle.tickets_sold),
-            ));
+    pub fn finish(&self, raffle: &Raffle, run: Option<u32>, sold: u64, now: DateTime<Utc>) -> Option<Violation> {
+        let subject = match run {
+            None => raffle.raffle_id.clone(),
+            Some(shard) => format!("{}#{shard:02}", raffle.raffle_id),
+        };
+        let detail = format!("entries reach {} but ticketsSold is {sold}", self.last_ticket);
+
+        if self.last_ticket > sold {
+            return Some(violation("ledger-overrun", subject, detail));
         }
-        let short = self.last_ticket < raffle.tickets_sold && raffle.status_at(now) != RaffleStatus::Open;
-        short.then(|| {
-            violation(
-                "ledger-short",
-                &raffle.raffle_id,
-                format!("entries reach {} but ticketsSold is {}", self.last_ticket, raffle.tickets_sold),
-            )
-        })
+        let short = self.last_ticket < sold && raffle.status_at(now) != RaffleStatus::Open;
+        short.then(|| violation("ledger-short", subject, detail))
     }
 }
 
@@ -171,12 +167,13 @@ pub async fn run<G: PaymentGateway>(repo: &DynamoRepo, gateway: &G, now: DateTim
     let mut report = Report::default();
 
     let raffles = repo.list_raffles().await?;
-    for raffle in raffles.iter().filter(|raffle| is_live(raffle, now)) {
+    for raffle in raffles.into_iter().filter(|raffle| is_live(raffle, now)) {
+        let raffle = repo.with_totals(raffle).await?;
         report.raffles_checked += 1;
-        report.violations.extend(raffle_violations(raffle));
-        check_ledger(repo, raffle, since, now, &mut report).await?;
-        if subscriptions_due_by_now(raffle, now) {
-            check_subscriptions(repo, raffle, &mut report).await?;
+        report.violations.extend(raffle_violations(&raffle));
+        check_ledger(repo, &raffle, since, now, &mut report).await?;
+        if subscriptions_due_by_now(&raffle, now) {
+            check_subscriptions(repo, &raffle, &mut report).await?;
         }
     }
     check_charges(repo, gateway, since, now - Duration::minutes(SETTLE_MINUTES), &mut report).await?;
@@ -196,12 +193,19 @@ pub async fn run<G: PaymentGateway>(repo: &DynamoRepo, gateway: &G, now: DateTim
     Ok(report)
 }
 
-async fn check_ledger(repo: &DynamoRepo, raffle: &Raffle, since: DateTime<Utc>, now: DateTime<Utc>, report: &mut Report) -> Result<(), AppError> {
+fn runs_of(raffle: &Raffle) -> Vec<Option<u32>> {
+    match raffle.shards {
+        None => vec![None],
+        Some(shards) => (0..shards).map(Some).collect(),
+    }
+}
+
+async fn walk_run(repo: &DynamoRepo, raffle: &Raffle, run: Option<u32>, since: DateTime<Utc>, report: &mut Report) -> Result<LedgerWalk, AppError> {
     let mut walk = LedgerWalk::default();
     let mut start = None;
 
     loop {
-        let (entries, next) = repo.list_entries(&raffle.raffle_id, ENTRY_PAGE_SIZE, start).await?;
+        let (entries, next) = repo.list_entries(&raffle.raffle_id, run, ENTRY_PAGE_SIZE, start).await?;
         for entry in &entries {
             report.entries_checked += 1;
             report.violations.extend(walk.step(entry));
@@ -214,8 +218,26 @@ async fn check_ledger(repo: &DynamoRepo, raffle: &Raffle, since: DateTime<Utc>, 
         start = Some(key);
     }
 
+    Ok(walk)
+}
+
+async fn check_ledger(repo: &DynamoRepo, raffle: &Raffle, since: DateTime<Utc>, now: DateTime<Utc>, report: &mut Report) -> Result<(), AppError> {
+    let runs = runs_of(raffle);
+    let mut walks = Vec::with_capacity(runs.len());
+    for run in &runs {
+        walks.push(walk_run(repo, raffle, *run, since, report).await?);
+    }
+
     let current = repo.get_raffle(&raffle.raffle_id).await?.unwrap_or_else(|| raffle.clone());
-    report.violations.extend(walk.finish(&current, now));
+    let counters = repo.counters(&current).await?;
+    for (run, walk) in runs.iter().zip(&walks) {
+        let sold = match run {
+            None => current.tickets_sold,
+            Some(shard) => counters[*shard as usize].sold,
+        };
+        report.violations.extend(walk.finish(&current, *run, sold, now));
+    }
+
     Ok(())
 }
 
@@ -260,6 +282,7 @@ mod tests {
             raffle_id: "winter-2026".into(),
             order_id: format!("ord-{from}"),
             entrant_id: "ent-1".into(),
+            shard: None,
             ticket_from: from,
             ticket_to: to,
             allocated_at: at(2026, 10, 1),
@@ -290,13 +313,16 @@ mod tests {
         assert!(walk.step(&entry(1, 15)).is_none());
         assert!(walk.step(&entry(16, 25)).is_none());
         assert_eq!(walk.step(&entry(30, 34)).map(|found| found.check), Some("ledger-gap"));
-        assert_eq!(walk.finish(&raffle(34), at(2026, 10, 1)), None);
-        assert_eq!(walk.finish(&raffle(30), at(2026, 10, 1)).map(|found| found.check), Some("ledger-overrun"));
+        assert_eq!(walk.finish(&raffle(34), None, 34, at(2026, 10, 1)), None);
+        assert_eq!(
+            walk.finish(&raffle(30), None, 30, at(2026, 10, 1)).map(|found| found.check),
+            Some("ledger-overrun")
+        );
 
         let open = at(2026, 10, 1);
         let closed = at(2027, 1, 9);
-        assert_eq!(walk.finish(&raffle(40), open), None);
-        assert_eq!(walk.finish(&raffle(40), closed).map(|found| found.check), Some("ledger-short"));
+        assert_eq!(walk.finish(&raffle(40), None, 40, open), None);
+        assert_eq!(walk.finish(&raffle(40), None, 40, closed).map(|found| found.check), Some("ledger-short"));
     }
 
     #[test]

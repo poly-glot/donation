@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::Client;
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -157,6 +157,19 @@ impl DynamoRepo {
             .await?;
 
         Ok(out.item.map(from_item).transpose()?)
+    }
+
+    pub(crate) async fn batch_get<T: DeserializeOwned>(&self, keys: Vec<(String, String)>, consistent: bool) -> Result<Vec<T>, AppError> {
+        let keys = keys
+            .into_iter()
+            .map(|(pk, sk)| Item::from([("PK".to_string(), s(pk)), ("SK".to_string(), s(sk))]))
+            .collect();
+        let request = KeysAndAttributes::builder().set_keys(Some(keys)).consistent_read(consistent).build()?;
+
+        let out = self.client.batch_get_item().request_items(&self.table, request).send().await?;
+        let items = out.responses.unwrap_or_default().remove(&self.table).unwrap_or_default();
+
+        Ok(from_items(items)?)
     }
 
     pub(crate) async fn put<T: Serialize>(&self, entity: &T, keys: &[(&str, String)], condition: Option<&str>) -> Result<(), AppError> {

@@ -1,5 +1,5 @@
 import { el, fieldValue, show } from "../dom.js";
-import { at, inPounds } from "../format.js";
+import { at, inPounds, ticketLabel } from "../format.js";
 import { admin, runDraw } from "./actions.js";
 import { choices, facts, link, number, row, rows, state } from "./markup.js";
 import { attempt, onSubmit } from "./task.js";
@@ -18,13 +18,13 @@ const winnerRow = (winner) =>
         number(String(winner.sequence)),
         number(String(winner.prizeRank)),
         number(inPounds(winner.prizeAmountPence)),
-        number(String(winner.ticketNumber)),
+        number(ticketLabel({ number: winner.ticketNumber, shard: winner.shard })),
         link(`order/${winner.orderId}`, winner.orderId),
         link(`supporter/${winner.entrantId}`, winner.entrantId),
         state(winner.status),
         choices(
             String(winner.sequence),
-            `ticket ${winner.ticketNumber}`,
+            `ticket ${ticketLabel({ number: winner.ticketNumber, shard: winner.shard })}`,
             WINNER_STATUSES.filter((status) => status !== winner.status),
         ),
     ]);

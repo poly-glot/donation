@@ -32,6 +32,7 @@ pub async fn local_repo(prefix: &str) -> Option<DynamoRepo> {
 }
 
 pub async fn seed_raffle(repo: &DynamoRepo, raffle: &Raffle) {
+    repo.create_counters(raffle).await.expect("create counters");
     if repo.create_raffle(raffle).await.expect("create raffle") {
         return;
     }
@@ -59,6 +60,7 @@ pub fn winter() -> Raffle {
         ticket_revenue_pence: 0,
         donation_pence: 0,
         subscriptions_charged_at: None,
+        shards: None,
         created_at: at(2026, 9, 1),
     }
 }
@@ -102,6 +104,7 @@ pub fn raffle(raffle_id: &str, opens_in_days: i64, closes_in_days: i64, now: Dat
         ticket_revenue_pence: 0,
         donation_pence: 0,
         subscriptions_charged_at: None,
+        shards: None,
         created_at: now,
     }
 }

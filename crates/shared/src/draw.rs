@@ -51,6 +51,8 @@ pub struct Draw {
     pub raffle_id: String,
     pub drawn_at: DateTime<Utc>,
     pub tickets_sold: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shard_counts: Vec<u64>,
     pub method: String,
     pub conducted_by: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,6 +75,8 @@ pub struct Winner {
     pub sequence: u32,
     pub prize_rank: u32,
     pub prize_amount_pence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<u32>,
     pub ticket_number: u64,
     pub order_id: String,
     pub entrant_id: String,

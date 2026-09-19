@@ -49,6 +49,7 @@ fn winner(entrant_id: &str, status: WinnerStatus) -> Winner {
         sequence: 1,
         prize_rank: 1,
         prize_amount_pence: FIRST_PRIZE_PENCE,
+        shard: None,
         ticket_number: WINNING_TICKET,
         order_id: "ord-1".into(),
         entrant_id: entrant_id.into(),
@@ -245,6 +246,7 @@ fn draw_record(now: DateTime<Utc>, tickets_sold: u64) -> Draw {
         raffle_id: RAFFLE_ID.into(),
         drawn_at: now,
         tickets_sold,
+        shard_counts: vec![],
         method: "os-csprng-uniform-rejection".into(),
         conducted_by: "Responsible Person".into(),
         witnessed_by: Some("Auditor".into()),
@@ -572,4 +574,52 @@ async fn a_subscriber_list_longer_than_one_page_is_walked_by_the_cursor_it_retur
         "the two pages together are every subscriber the arrangement seeded"
     );
     assert_eq!(second["cursor"], Value::Null, "the page that finishes the list carries no cursor");
+}
+
+#[tokio::test]
+async fn a_sharded_raffle_is_created_with_its_counters_and_its_tickets_are_found_by_shard() {
+    let Some(repo) = local_repo("admin-test").await else {
+        return;
+    };
+    let now = Utc::now();
+    let split = |max_tickets: u64| {
+        let mut input = raffle_input("Split raffle", 100, 114, now);
+        input["shards"] = json!(3);
+        input["maxTickets"] = json!(max_tickets);
+        input
+    };
+
+    let created = run(&repo, action("createRaffle", split(5_000_000)), now).await.unwrap();
+    assert_eq!(created["shards"], json!(3));
+    let raffle = stored_raffle(&repo).await;
+    assert_eq!(repo.counters(&raffle).await.unwrap().len(), 3, "one counter row per shard exists");
+
+    let order = Order::single("ord-split", &raffle, ENTRANT_ID, 5, 0, false, now);
+    assert!(repo.create_order(&order).await.unwrap());
+    let allocation = repo.allocate_entry("ord-split", &debit_payment("pi_split", None), now).await.unwrap();
+    let Allocation::Allocated(sale) = allocation else {
+        panic!("the sharded raffle sells tickets, got {allocation:?}");
+    };
+
+    let found = run(
+        &repo,
+        action(
+            "findTicket",
+            json!({ "raffleId": RAFFLE_ID, "shard": sale.shard, "ticketNumber": sale.ticket_from }),
+        ),
+        now,
+    )
+    .await
+    .unwrap();
+    assert_eq!(found["orderId"], json!("ord-split"), "a ticket is found by its shard and number");
+
+    let page = run(&repo, action("listEntries", json!({ "raffleId": RAFFLE_ID, "shard": sale.shard })), now)
+        .await
+        .unwrap();
+    assert_eq!(page["entries"].as_array().map(Vec::len), Some(1), "the shard's ledger lists its one run");
+
+    assert_bad_request(
+        run(&repo, action("updateRaffle", split(10)), now).await,
+        "the cap of a sharded raffle cannot change",
+    );
 }

@@ -9,6 +9,7 @@ use shared::error::AppError;
 use shared::http::{answered, authorise, body};
 use shared::order::{Entry, OrderStatus};
 use shared::raffle::{Prize, Raffle, RaffleStatus};
+use shared::shard::{Counter, draw_number, locate};
 use shared::table::DynamoRepo;
 
 pub const METHOD: &str = "os-csprng-uniform-rejection";
@@ -94,6 +95,8 @@ pub async fn run(repo: &DynamoRepo, request: DrawRequest, mut random: impl FnMut
     let Some(raffle) = repo.get_raffle(&request.raffle_id).await? else {
         return Err(AppError::NotFound(format!("raffle {}", request.raffle_id)));
     };
+    let counters = repo.counters(&raffle).await?;
+    let raffle = raffle.summed(&counters);
     let state = draw_state(&raffle, now)?;
 
     let prizes = repo.list_prizes(&raffle.raffle_id).await?;
@@ -103,7 +106,7 @@ pub async fn run(repo: &DynamoRepo, request: DrawRequest, mut random: impl FnMut
     }
 
     let draw = match state {
-        DrawState::Fresh => record_draw(repo, &raffle, request, now).await?,
+        DrawState::Fresh => record_draw(repo, &raffle, &counters, request, now).await?,
         DrawState::Resume => repo
             .get_draw(&raffle.raffle_id)
             .await?
@@ -111,24 +114,25 @@ pub async fn run(repo: &DynamoRepo, request: DrawRequest, mut random: impl FnMut
     };
 
     let mut winners = repo.list_winners(&raffle.raffle_id).await?;
-    let mut won: HashSet<u64> = winners.iter().map(|winner| winner.ticket_number).collect();
+    let mut won: HashSet<u64> = winners.iter().map(|winner| draw_number_of(&draw, winner)).collect();
 
     for (index, prize) in slots.iter().enumerate().skip(winners.len()) {
-        let (ticket_number, entry) = pick_entry(repo, &draw, &mut random, &won).await?;
+        let pick = pick_entry(repo, &draw, &mut random, &won).await?;
         let winner = Winner {
             raffle_id: raffle.raffle_id.clone(),
             sequence: index as u32 + 1,
             prize_rank: prize.rank,
             prize_amount_pence: prize.amount_pence,
-            ticket_number,
-            order_id: entry.order_id,
-            entrant_id: entry.entrant_id,
+            shard: pick.shard,
+            ticket_number: pick.ticket_number,
+            order_id: pick.entry.order_id,
+            entrant_id: pick.entry.entrant_id,
             status: WinnerStatus::Pending,
         };
         if !repo.put_winner(&winner).await? {
             return Err(AppError::Conflict(format!("winner {} already recorded by another run", winner.sequence)));
         }
-        won.insert(ticket_number);
+        won.insert(pick.drawn);
         winners.push(winner);
     }
 
@@ -140,11 +144,12 @@ pub async fn run(repo: &DynamoRepo, request: DrawRequest, mut random: impl FnMut
     })
 }
 
-async fn record_draw(repo: &DynamoRepo, raffle: &Raffle, request: DrawRequest, now: DateTime<Utc>) -> Result<Draw, AppError> {
+async fn record_draw(repo: &DynamoRepo, raffle: &Raffle, counters: &[Counter], request: DrawRequest, now: DateTime<Utc>) -> Result<Draw, AppError> {
     let draw = Draw {
         raffle_id: raffle.raffle_id.clone(),
         drawn_at: now,
         tickets_sold: raffle.tickets_sold,
+        shard_counts: counters.iter().map(|counter| counter.sold).collect(),
         method: METHOD.into(),
         conducted_by: request.conducted_by,
         witnessed_by: request.witnessed_by,
@@ -155,19 +160,51 @@ async fn record_draw(repo: &DynamoRepo, raffle: &Raffle, request: DrawRequest, n
     Ok(draw)
 }
 
-async fn pick_entry(repo: &DynamoRepo, draw: &Draw, random: &mut impl FnMut() -> u64, won: &HashSet<u64>) -> Result<(u64, Entry), AppError> {
+struct Pick {
+    drawn: u64,
+    shard: Option<u32>,
+    ticket_number: u64,
+    entry: Entry,
+}
+
+fn physical(draw: &Draw, drawn: u64) -> Option<(Option<u32>, u64)> {
+    if draw.shard_counts.is_empty() {
+        return Some((None, drawn));
+    }
+
+    locate(&draw.shard_counts, drawn).map(|(shard, number)| (Some(shard), number))
+}
+
+fn draw_number_of(draw: &Draw, winner: &Winner) -> u64 {
+    match winner.shard {
+        None => winner.ticket_number,
+        Some(shard) => draw_number(&draw.shard_counts, shard, winner.ticket_number),
+    }
+}
+
+async fn pick_entry(repo: &DynamoRepo, draw: &Draw, random: &mut impl FnMut() -> u64, won: &HashSet<u64>) -> Result<Pick, AppError> {
     for _ in 0..MAX_REDRAWS_PER_PRIZE {
-        let ticket_number = uniform(&mut *random, draw.tickets_sold);
-        if won.contains(&ticket_number) {
+        let drawn = uniform(&mut *random, draw.tickets_sold);
+        if won.contains(&drawn) {
             continue;
         }
-        let Some(entry) = repo.find_entry_by_ticket(&draw.raffle_id, ticket_number).await? else {
+        let Some((shard, ticket_number)) = physical(draw, drawn) else {
             continue;
         };
+        let Some(entry) = repo.find_entry_by_ticket(&draw.raffle_id, shard, ticket_number).await? else {
+            continue;
+        };
+
         if repo.get_order(&entry.order_id).await?.is_some_and(|order| order.status == OrderStatus::Paid) {
-            return Ok((ticket_number, entry));
+            return Ok(Pick {
+                drawn,
+                shard,
+                ticket_number,
+                entry,
+            });
         }
     }
+
     Err(AppError::Internal(format!("no eligible ticket after {MAX_REDRAWS_PER_PRIZE} draws")))
 }
 

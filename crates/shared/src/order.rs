@@ -27,6 +27,8 @@ use serde_dynamo::aws_sdk_dynamodb_1::to_attribute_value;
 use crate::entrant::{Entrant, entrant_pk};
 use crate::error::{AppError, CONDITIONAL_CHECK_FAILED};
 use crate::raffle::{Raffle, RaffleStatus, raffle_pk};
+use crate::random::jittered;
+use crate::shard::{COUNTER_SK, shard_pk};
 use crate::subscription::Subscription;
 use crate::table::{DynamoRepo, GSI2, METADATA_SK, PageKey, condition_failed_as_false, item, n, partition, s, sort_ts};
 
@@ -46,8 +48,18 @@ fn entrant_order_gsi1sk(created_at: DateTime<Utc>) -> String {
     format!("ORDER#{}", sort_ts(created_at))
 }
 
-fn entrant_entry_gsi1sk(raffle_id: &str, ticket_from: u64) -> String {
-    format!("ENTRY#{raffle_id}#{ticket_from:08}")
+fn entry_pk(raffle_id: &str, shard: Option<u32>) -> String {
+    match shard {
+        None => raffle_pk(raffle_id),
+        Some(shard) => shard_pk(raffle_id, shard),
+    }
+}
+
+fn entrant_entry_gsi1sk(raffle_id: &str, shard: Option<u32>, ticket_from: u64) -> String {
+    match shard {
+        None => format!("ENTRY#{raffle_id}#{ticket_from:08}"),
+        Some(shard) => format!("ENTRY#{raffle_id}#{shard:02}#{ticket_from:08}"),
+    }
 }
 
 /// The order's `GSI2PK`, present once a PaymentIntent exists, so the webhook can
@@ -71,10 +83,10 @@ fn order_keys(order: &Order) -> Vec<(&'static str, String)> {
 
 fn entry_keys(entry: &Entry) -> Vec<(&'static str, String)> {
     vec![
-        ("PK", raffle_pk(&entry.raffle_id)),
+        ("PK", entry_pk(&entry.raffle_id, entry.shard)),
         ("SK", entry_sk(entry.ticket_from)),
         ("GSI1PK", entrant_pk(&entry.entrant_id)),
-        ("GSI1SK", entrant_entry_gsi1sk(&entry.raffle_id, entry.ticket_from)),
+        ("GSI1SK", entrant_entry_gsi1sk(&entry.raffle_id, entry.shard, entry.ticket_from)),
     ]
 }
 
@@ -203,6 +215,8 @@ pub struct Entry {
     pub raffle_id: String,
     pub order_id: String,
     pub entrant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<u32>,
     pub ticket_from: u64,
     pub ticket_to: u64,
     pub allocated_at: DateTime<Utc>,
@@ -218,6 +232,11 @@ impl Entry {
 /// raffle had already sold. Ranges are 1-based and butt exactly against each other.
 pub(crate) fn ticket_range(tickets_sold_before: u64, ticket_quantity: u32) -> (u64, u64) {
     (tickets_sold_before + 1, tickets_sold_before + u64::from(ticket_quantity))
+}
+
+pub(crate) struct Run {
+    shard: Option<u32>,
+    sold: u64,
 }
 
 /// The three ways an allocation attempt can end.
@@ -236,10 +255,6 @@ pub enum Allocation {
 pub(crate) enum AllocationConflict {
     OrderNotPending,
     Retryable,
-}
-
-pub(crate) fn jittered(cap: Duration) -> Duration {
-    cap.mul_f64(crate::random::u64() as f64 / u64::MAX as f64)
 }
 
 pub(crate) fn allocation_conflict(err: &AppError) -> Option<AllocationConflict> {
@@ -337,40 +352,42 @@ impl DynamoRepo {
     /// transaction; a counter race re-reads and retries after a jittered backoff, while
     /// a replay or an over-cap order returns without burning numbers.
     pub async fn allocate_entry(&self, order_id: &str, payment: &PaidPayment, now: DateTime<Utc>) -> Result<Allocation, AppError> {
-        for attempt in 0..ALLOCATION_ATTEMPTS {
+        Ok(self.allocate_entry_counting(order_id, payment, now).await?.0)
+    }
+
+    pub async fn allocate_entry_counting(&self, order_id: &str, payment: &PaidPayment, now: DateTime<Utc>) -> Result<(Allocation, u32), AppError> {
+        for attempt in 1..=ALLOCATION_ATTEMPTS {
             let Some(order): Option<Order> = self.get(order_pk(order_id), METADATA_SK, true).await? else {
                 return Err(AppError::NotFound(format!("order {order_id}")));
             };
             match order.status {
                 OrderStatus::Pending => {}
-                OrderStatus::Paid => return Ok(Allocation::AlreadyPaid),
+                OrderStatus::Paid => return Ok((Allocation::AlreadyPaid, attempt)),
                 other => return Err(AppError::Conflict(format!("order {order_id} is {other:?}"))),
             }
 
             let Some(raffle): Option<Raffle> = self.get(raffle_pk(&order.raffle_id), METADATA_SK, true).await? else {
                 return Err(AppError::NotFound(format!("raffle {}", order.raffle_id)));
             };
-            let (ticket_from, ticket_to) = ticket_range(raffle.tickets_sold, order.ticket_quantity);
-            if ticket_to > raffle.max_tickets {
-                return Ok(Allocation::SoldOut);
-            }
-
+            let Some(run) = self.run_with_room(&raffle, &order).await? else {
+                return Ok((Allocation::SoldOut, attempt));
+            };
+            let (ticket_from, ticket_to) = ticket_range(run.sold, order.ticket_quantity);
             let entry = Entry {
                 raffle_id: order.raffle_id.clone(),
                 order_id: order.order_id.clone(),
                 entrant_id: order.entrant_id.clone(),
+                shard: run.shard,
                 ticket_from,
                 ticket_to,
                 allocated_at: now,
             };
 
-            match self.commit_allocation(&order, raffle.tickets_sold, &entry, payment, now).await {
-                Ok(()) => return Ok(Allocation::Allocated(entry)),
+            match self.commit_allocation(&order, &run, &entry, payment, now).await {
+                Ok(()) => return Ok((Allocation::Allocated(entry), attempt)),
                 Err(err) => match allocation_conflict(&err) {
-                    Some(AllocationConflict::OrderNotPending) => return Ok(Allocation::AlreadyPaid),
-                    Some(AllocationConflict::Retryable) => {
-                        tokio::time::sleep(jittered(ALLOCATION_BACKOFF_STEP * (attempt + 1))).await;
-                    }
+                    Some(AllocationConflict::OrderNotPending) => return Ok((Allocation::AlreadyPaid, attempt)),
+                    Some(AllocationConflict::Retryable) => tokio::time::sleep(jittered(ALLOCATION_BACKOFF_STEP * attempt)).await,
                     None => return Err(err),
                 },
             }
@@ -379,28 +396,24 @@ impl DynamoRepo {
         Err(AppError::Conflict(format!("ticket counter contention allocating order {order_id}")))
     }
 
-    async fn commit_allocation(
-        &self,
-        order: &Order,
-        tickets_sold_before: u64,
-        entry: &Entry,
-        payment: &PaidPayment,
-        now: DateTime<Utc>,
-    ) -> Result<(), AppError> {
-        let raffle_update = Update::builder()
-            .table_name(self.table())
-            .key("PK", s(raffle_pk(&order.raffle_id)))
-            .key("SK", s(METADATA_SK))
-            .update_expression(
-                "SET ticketsSold = :to, ticketRevenuePence = ticketRevenuePence + :revenue, \
-                 donationPence = donationPence + :donation",
-            )
-            .condition_expression("ticketsSold = :sold")
-            .expression_attribute_values(":sold", n(tickets_sold_before))
-            .expression_attribute_values(":to", n(entry.ticket_to))
-            .expression_attribute_values(":revenue", n(order.ticket_amount_pence))
-            .expression_attribute_values(":donation", n(order.donation_pence))
-            .build()?;
+    async fn run_with_room(&self, raffle: &Raffle, order: &Order) -> Result<Option<Run>, AppError> {
+        let Some(shards) = raffle.shards else {
+            let fits = raffle.tickets_sold + u64::from(order.ticket_quantity) <= raffle.max_tickets;
+            return Ok(fits.then_some(Run {
+                shard: None,
+                sold: raffle.tickets_sold,
+            }));
+        };
+
+        let counter = self.counter_with_room(raffle, order, shards).await?;
+        Ok(counter.map(|counter| Run {
+            shard: Some(counter.shard),
+            sold: counter.sold,
+        }))
+    }
+
+    async fn commit_allocation(&self, order: &Order, run: &Run, entry: &Entry, payment: &PaidPayment, now: DateTime<Utc>) -> Result<(), AppError> {
+        let counter_update = self.counter_update(order, run, entry)?;
 
         let entry_put = Put::builder()
             .table_name(self.table())
@@ -412,13 +425,42 @@ impl DynamoRepo {
 
         self.client()
             .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(raffle_update).build())
+            .transact_items(TransactWriteItem::builder().update(counter_update).build())
             .transact_items(TransactWriteItem::builder().put(entry_put).build())
             .transact_items(TransactWriteItem::builder().update(order_update).build())
             .send()
             .await?;
 
         Ok(())
+    }
+
+    fn counter_update(&self, order: &Order, run: &Run, entry: &Entry) -> Result<Update, AppError> {
+        let (pk, sk, expression, condition) = match run.shard {
+            None => (
+                raffle_pk(&order.raffle_id),
+                METADATA_SK,
+                "SET ticketsSold = :to, ticketRevenuePence = ticketRevenuePence + :revenue, donationPence = donationPence + :donation",
+                "ticketsSold = :sold",
+            ),
+            Some(shard) => (
+                shard_pk(&order.raffle_id, shard),
+                COUNTER_SK,
+                "SET sold = :to, ticketRevenuePence = ticketRevenuePence + :revenue, donationPence = donationPence + :donation",
+                "sold = :sold",
+            ),
+        };
+
+        Ok(Update::builder()
+            .table_name(self.table())
+            .key("PK", s(pk))
+            .key("SK", s(sk))
+            .update_expression(expression)
+            .condition_expression(condition)
+            .expression_attribute_values(":sold", n(run.sold))
+            .expression_attribute_values(":to", n(entry.ticket_to))
+            .expression_attribute_values(":revenue", n(order.ticket_amount_pence))
+            .expression_attribute_values(":donation", n(order.donation_pence))
+            .build()?)
     }
 
     pub(crate) fn paid_order_update(&self, order: &Order, payment: &PaidPayment, now: DateTime<Utc>) -> Result<Update, AppError> {
@@ -444,7 +486,7 @@ impl DynamoRepo {
 
     /// Who holds ticket `N`: the last entry whose range starts at or before `N`,
     /// confirmed to actually contain it. One descending, limit-1 range query.
-    pub async fn find_entry_by_ticket(&self, raffle_id: &str, ticket_number: u64) -> Result<Option<Entry>, AppError> {
+    pub async fn find_entry_by_ticket(&self, raffle_id: &str, shard: Option<u32>, ticket_number: u64) -> Result<Option<Entry>, AppError> {
         if ticket_number == 0 {
             return Ok(None);
         }
@@ -454,7 +496,7 @@ impl DynamoRepo {
                 None,
                 "PK = :pk AND SK BETWEEN :first AND :last",
                 vec![
-                    (":pk", s(raffle_pk(raffle_id))),
+                    (":pk", s(entry_pk(raffle_id, shard))),
                     (":first", s(entry_sk(1))),
                     (":last", s(entry_sk(ticket_number))),
                 ],
@@ -472,8 +514,16 @@ impl DynamoRepo {
         self.query_entrant_index(entrant_id, "ENTRY#").await?.all()
     }
 
-    pub async fn list_entries(&self, raffle_id: &str, limit: i32, start: Option<PageKey>) -> Result<(Vec<Entry>, Option<PageKey>), AppError> {
-        self.query_prefix(raffle_pk(raffle_id), "ENTRY#", false, Some(limit), start).await?.paged()
+    pub async fn list_entries(
+        &self,
+        raffle_id: &str,
+        shard: Option<u32>,
+        limit: i32,
+        start: Option<PageKey>,
+    ) -> Result<(Vec<Entry>, Option<PageKey>), AppError> {
+        self.query_prefix(entry_pk(raffle_id, shard), "ENTRY#", false, Some(limit), start)
+            .await?
+            .paged()
     }
 }
 
@@ -628,6 +678,7 @@ mod tests {
             raffle_id: "winter-2026".into(),
             order_id: "ord-2".into(),
             entrant_id: "ent-1".into(),
+            shard: None,
             ticket_from: 16,
             ticket_to: 25,
             allocated_at: at(2026, 10, 1),

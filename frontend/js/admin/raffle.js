@@ -10,7 +10,7 @@ const REMOVE = "remove";
 const CREATE_LABEL = "Create the raffle";
 const UPDATE_LABEL = "Save changes";
 
-const NEW_LEDE = "Dates are UTC and must run opens before closes, closes on or before the draw, and the draw on or before the results. The id may hold letters, digits, a dash and an underscore, and cannot change afterwards.";
+const NEW_LEDE = "Dates are UTC and must run opens before closes, closes on or before the draw, and the draw on or before the results. The id may hold letters, digits, a dash and an underscore, and cannot change afterwards. Ticket counters split the numbering into that many runs for a busy launch; leave it blank for one run, and it cannot change afterwards.";
 const NEW_STATE = "new";
 const NEW_TITLE = "A new raffle";
 const NOT_YET = "not yet";
@@ -34,6 +34,7 @@ const prizeRow = (prize) =>
 const counterFacts = (raffle) =>
     facts([
         ["Tickets sold", `${raffle.ticketsSold} of ${raffle.maxTickets}`],
+        ["Ticket counters", String(raffle.shards ?? 1)],
         ["Ticket revenue", inPounds(raffle.ticketRevenuePence)],
         ["Donations", inPounds(raffle.donationPence)],
         ["Ticket price", inPounds(raffle.ticketPricePence)],
@@ -53,6 +54,7 @@ function fillRaffle(form, raffle) {
     put(form, "closesAt", inFieldValue(raffle.closesAt));
     put(form, "drawAt", inFieldValue(raffle.drawAt));
     put(form, "resultsAt", inFieldValue(raffle.resultsAt));
+    put(form, "shards", raffle.shards ?? "");
 }
 
 function fillPrize(form, raffleId, prize) {
@@ -74,6 +76,7 @@ function readRaffle(form) {
         opensAt: toInstant(fieldValue(form, "opensAt")),
         raffleId: fieldValue(form, "raffleId"),
         resultsAt: toInstant(fieldValue(form, "resultsAt")),
+        shards: Number(fieldValue(form, "shards")) || undefined,
         ticketPricePence: Number(fieldValue(form, "ticketPricePence")),
     };
 }

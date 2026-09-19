@@ -217,9 +217,10 @@ What this means in practice:
 - **A steady flow of 20 paid orders a second goes through without a single failure**, and each supporter
   sees their ticket numbers within a fraction of a second. A charity's busiest minute is a few sales a
   second, so there is a wide margin.
-- **The limit is about 30 paid orders a second on one raffle.** The live site keeps a single ticket
-  counter per raffle, every paid order updates it, and it can only be updated one order at a time, so
-  160 orders arriving together take about five seconds to work through.
+- **The limit is about 30 paid orders a second on one raffle.** The live raffle has a single ticket
+  counter, every paid order updates it, and it can only be updated one order at a time, so 160 orders
+  arriving together take about five seconds to work through. A raffle can be created with several
+  counters instead; see "Several counters per raffle" below.
 - **Orders that arrive in the same instant can be refused the first time.** When 40 land together, about
   one in eight is refused; when 160 land together, one in four. A refused order is not lost. Stripe sends
   the message again a few minutes later, and in the test every refused order received its tickets on the
@@ -291,22 +292,20 @@ raffle's partition, and a partition writes a thousand units a second. DynamoDB s
 on its own, but not instantly, so a raffle expected to pass that rate wants its capacity raised the day
 before rather than the hour before.
 
-### A sharded counter, not in use
+### Several counters per raffle
 
-The live site does not use this. Everything measured above is the single counter per raffle that the
-site runs today. This section describes an alternative that exists in the code, in `shared::shard`, but
-that no function calls.
+A raffle can be created with several ticket counters instead of one. The "Ticket counters" field on the
+admin console's raffle form takes the number, it cannot change afterwards, and a raffle created without
+it keeps one counter, which is what the live raffle has. With eight counters, each owns an eighth of the
+licence cap; an order is assigned to one of them by its order id and moves to the next when its own is
+full; tickets are numbered within their counter, so a ticket reads as 3-412 rather than 412 on the
+confirmation page, in the admin console and in the ledger; and the draw still picks one number between 1
+and the total sold, then works out which counter and which ticket that number lands on from the counts
+frozen in the draw record. The raffle page's running totals are the sum of the counters.
 
-The idea is to split each raffle's counter into eight. Each of the eight owns an eighth of the licence
-cap; an order is assigned to one of them by its order id and moves to the next when its own is full;
-tickets are numbered within their counter rather than across the raffle, so a ticket reads as 3-000412
-rather than 412; and the draw still picks one number between 1 and the total sold, then works out which
-counter and which ticket that number lands on from the eight counts recorded at the draw. Eight counters
-mean eight times fewer orders queueing on any one of them, so a burst is refused far less often.
-
-It was measured against a local copy of the database, not the live site, by racing orders on one raffle
-and counting how many times an order had to retry because another order got there first, and how many
-orders gave up after their ten attempts:
+Eight counters mean eight times fewer orders queueing on any one of them, so a burst is refused far less
+often. Against a local copy of the database, racing orders on one raffle and counting how many times an
+order had to retry because another got there first, and how many orders gave up after their ten attempts:
 
 | Orders at once | One counter, retries and orders that gave up | Eight counters, retries and orders that gave up |
 |----------------|----------------------------------------------|-------------------------------------------------|
@@ -314,12 +313,13 @@ orders gave up after their ten attempts:
 | 80             | 439, up to 3 gave up                         | 151, none                                       |
 | 160            | 1,349, about half gave up                    | 562, none                                       |
 
-The local copy runs one transaction at a time, so the eight counters could not work in parallel there
-and the real gain would be larger. What it costs: eight runs of ticket numbers instead of one, the
-longer ticket label, up to 152 tickets that can stay unsold when the raffle reaches its cap, and, before
-it could be used, giving each counter its own partition in the database so they spread the load. The
-queue keeps one run of numbers and costs less to write, so it stays the first choice when a launch is
-being paid for; the eight counters are the measured fallback if a queue is not wanted.
+The local copy runs one transaction at a time, so the eight counters could not work in parallel there;
+on the real service each counter has its own partition, so they do. The cost is eight runs of ticket
+numbers instead of one, the longer label, and up to 152 tickets that can stay unsold when the raffle
+reaches its cap. The queue keeps one run of numbers and costs less to write, so it stays the first
+choice when a launch is being paid for; the counters are the setting to reach for when a queue is not
+wanted. To measure a counters raffle on the live site, create one and run the stress test above with
+`STRESS_RAFFLE_ID` naming it.
 
 The other ceilings, the subscription charge run at a few thousand subscribers a raffle and the
 reconciliation's 48-hour window, are listed with their upgrade paths in the spec.

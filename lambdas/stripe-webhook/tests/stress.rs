@@ -223,7 +223,10 @@ impl Site {
             .expect("config.js names the publishable key")
             .to_string();
         let current = json_of(http.get(format!("{base}/api/raffles/current")).send().await.unwrap()).await.unwrap();
-        let raffle_id = current["current"]["raffleId"].as_str().expect("an open raffle").to_string();
+        let raffle_id = std::env::var("STRESS_RAFFLE_ID")
+            .ok()
+            .or_else(|| current["current"]["raffleId"].as_str().map(str::to_string))
+            .expect("an open raffle, or STRESS_RAFFLE_ID");
 
         Self {
             base,

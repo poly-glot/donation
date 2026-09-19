@@ -67,7 +67,7 @@ async fn order_status(repo: &DynamoRepo, order_id: &str) -> OrderStatus {
 }
 
 async fn owner_of_ticket(repo: &DynamoRepo, ticket: u64) -> Option<String> {
-    let entry = repo.find_entry_by_ticket(RAFFLE_ID, ticket).await.unwrap();
+    let entry = repo.find_entry_by_ticket(RAFFLE_ID, None, ticket).await.unwrap();
     entry.map(|entry| entry.order_id)
 }
 

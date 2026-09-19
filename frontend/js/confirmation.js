@@ -1,5 +1,6 @@
 import { call } from "./api.js";
 import { el, show, sleep } from "./dom.js";
+import { ticketLabel } from "./format.js";
 
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 60_000;
@@ -30,8 +31,10 @@ async function pollOrderResult(orderId) {
     return { status: "TIMEOUT" };
 }
 
-function formatTicketMessage({ from, to }) {
-    const label = from === to ? `number is ${from}` : `numbers are ${from} to ${to}`;
+function formatTicketMessage({ from, shard, to }) {
+    const first = ticketLabel({ number: from, shard });
+    const last = ticketLabel({ number: to, shard });
+    const label = from === to ? `number is ${first}` : `numbers are ${first} to ${last}`;
 
     return `Your ticket ${label}. Keep your order number; winners are contacted after the draw.`;
 }

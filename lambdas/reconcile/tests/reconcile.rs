@@ -169,3 +169,26 @@ async fn only_entries_inside_the_lookback_window_are_matched_to_their_order() {
         stale.ticket_from
     );
 }
+
+#[tokio::test]
+async fn a_sharded_ledger_is_walked_counter_by_counter() {
+    let Some(repo) = local_repo("reconcile-test").await else {
+        return;
+    };
+    let now = Utc::now();
+    let mut raffle = raffle("split-2026", -1, 100, now);
+    raffle.shards = Some(3);
+    seed_raffle(&repo, &raffle).await;
+    for (order_id, quantity) in [("split-1", 5), ("split-2", 10), ("split-3", 15), ("split-4", 20)] {
+        paid_order(&repo, &raffle, order_id, quantity, now).await;
+    }
+
+    let report = run(&repo, &no_charges(), now).await.unwrap();
+
+    assert_eq!(
+        checks(&report),
+        Vec::<(&str, &str)>::new(),
+        "four runs across three counters have no gaps, overruns or shortfalls"
+    );
+    assert_eq!(report.entries_checked, 4, "every run on every counter is walked");
+}

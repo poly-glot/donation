@@ -71,6 +71,8 @@ pub struct RaffleView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TicketRange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<u32>,
     pub from: u64,
     pub to: u64,
 }
@@ -212,6 +214,7 @@ impl<G: PaymentGateway> Api<G> {
         let tickets = if matches!(order.status, OrderStatus::Paid | OrderStatus::Refunded) {
             let entries = self.repo.list_entries_for_entrant(&order.entrant_id).await?;
             entries.into_iter().find(|entry| entry.order_id == order.order_id).map(|entry| TicketRange {
+                shard: entry.shard,
                 from: entry.ticket_from,
                 to: entry.ticket_to,
             })
@@ -233,9 +236,11 @@ impl<G: PaymentGateway> Api<G> {
             return Ok(None);
         };
         let prizes = self.repo.list_prizes(&raffle.raffle_id).await?;
+        let raffle = self.repo.with_totals(raffle.clone()).await?;
+
         Ok(Some(RaffleView {
             status: raffle.status_at(now),
-            raffle: raffle.clone(),
+            raffle,
             prizes,
         }))
     }
