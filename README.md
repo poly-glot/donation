@@ -141,7 +141,18 @@ costs a few pounds in unit-hours above the free 25.
 The stack is sized for a charity's launch morning rather than a ticket agency's: an email goes out, a
 few thousand supporters open the page within the hour, and a few hundred buy in the busiest minute.
 Each part has a known ceiling and a named way past it. The spec lists the design ceilings under
-"Deliberate simplifications and their ceilings"; this section puts numbers on them.
+"Deliberate simplifications and their ceilings"; this section puts measured numbers on them. Two ignored
+tests produce the measurements and rerun with the same Docker recipe as the suite:
+
+```bash
+cargo test -p stripe-webhook --test stress -- --ignored --nocapture
+cargo test -p shared --test shard -- --ignored --nocapture lost_rounds
+```
+
+Both run against DynamoDB Local, which commits a transaction in a few milliseconds where the real
+service takes twenty to forty, so the rates below are upper bounds and the shapes are the allocator's
+own. Pointing the same tests at a real region needs credentials, and they leave their on-demand tables
+behind.
 
 ### What a sale costs
 
@@ -149,44 +160,71 @@ Browsing costs the table almost nothing. CloudFront caches `GET /api/raffles/cur
 seconds, so however many people open the page, the origin answers a few reads a minute.
 
 A checkout is one `api` invocation: two reads, then the entrant, the consent, the Gift Aid declaration
-and the order written one after another, each with its index entries, with a Stripe call in between to
-create the PaymentIntent and a second one to create a Customer for a new subscriber.
+and the order written one after another, with a Stripe call in between to create the PaymentIntent and a
+second one to create a Customer for a new subscriber.
 
-A paid order is one `stripe-webhook` invocation: a consistent read of the raffle, then one transaction
-that moves the ticket counter, writes the ledger row and marks the order paid. DynamoDB charges
-transactional writes double, so the allocation alone is six write units on the table. Across the two
-calls a sale costs roughly ten write units on the table and a handful on each index.
+A paid order is one `stripe-webhook` invocation: a consistent read of the order and of the raffle, then
+one transaction that moves the ticket counter, writes the ledger row and marks the order paid. DynamoDB
+charges transactional writes double, so the allocation alone is six write units on the table. Both
+indexes project every attribute, so an index is written whenever an indexed row changes at all:
 
-### The current target: 50 paid orders a second
+| Pool  | Writes per sale | Which writes                                                                    |
+|-------|-----------------|---------------------------------------------------------------------------------|
+| table | 10              | entrant, consent, Gift Aid and order, then the three-item transaction at double |
+| GSI1  | 5               | entrant, order, entry, the order's `PAID` flip and the raffle's counter update  |
+| GSI2  | 2               | the order's creation and its `PAID` flip                                        |
 
-| Limit          | Where it bites                                  | Today                                             |
-|----------------|-------------------------------------------------|---------------------------------------------------|
-| ticket counter | one compare-and-set per raffle                  | about 50 sales a second on one raffle             |
-| table writes   | 15 units on the table, roughly 10 per sale      | one or two a second sustained, five minutes banked |
-| Stripe API     | 100 write requests a second in live mode        | 100 checkouts a second                            |
-| Lambda         | the account's concurrency quota                 | 1,000 by default                                  |
+A lost allocation round, a compare-and-set that failed because another sale landed first, is billed as
+well: the cancelled transaction consumes write capacity and its two consistent reads are spent. Under a
+burst the losers dominate the bill. In the measurement below, 160 simultaneous paid orders spent about
+five write units on lost rounds for every one on a successful allocation.
 
-The two ceilings that matter sit at different heights, and the lower one is a matter of money rather
-than design.
+### Where the ceilings are
 
-**Capacity.** The free 15 write units on the table sustain one or two sales a second. DynamoDB banks up
-to five minutes of unused capacity, so a burst of a few hundred sales goes through before anything
-throttles; the SDK's retries absorb a short overrun and the throttle alarm pages for a long one. That
-is the right size between raffles and for steady selling. For a launch window raise
+| Limit            | Where it bites                                  | Ceiling                                   |
+|------------------|-------------------------------------------------|-------------------------------------------|
+| GSI1 writes      | 5 units, 5 per sale                             | about 1 sale a second sustained           |
+| table writes     | 15 units, 10 per sale                           | about 1.5 sales a second sustained        |
+| GSI2 writes      | 5 units, 2 per sale                             | about 2.5 sales a second sustained        |
+| Lambda           | the account's concurrency quota                 | 10 on a new account until raised          |
+| Stripe API       | 100 write requests a second in live mode        | 100 checkouts a second                    |
+| ticket counter   | one compare-and-set per raffle                  | any paced rate; about 80 arriving at once |
+| raffle partition | 1,000 write units a second on one partition key | about 160 allocations a second            |
+
+**Capacity is the first wall, and it is the index's.** Five write units on GSI1 against five writes per
+sale is one sale a second. DynamoDB banks up to five minutes of unused capacity, so a burst of about
+three hundred sales goes through from idle before the index throttles, and a throttled index throttles
+the base table's writes with it. The SDK's retries absorb a short overrun and the throttle alarm pages
+for a long one. That is the right size between raffles and for steady selling. For a launch window raise
 `local.free_capacity` in `modules/table` of `aws-cloud` in a change of its own, and lower it again
 afterwards.
 
-**The counter.** Gapless numbering means every paid order on a raffle moves the same counter, and a
-compare-and-set admits one winner per round trip. A DynamoDB transaction takes about twenty
-milliseconds, so the counter settles around fifty sales a second on one raffle however much capacity
-the table has, and the losers' retries add load rather than throughput. The ten jittered attempts ride
-out a burst well above that rate for a second or two. A sustained rate above it exhausts the attempts,
-the webhook answers 500 and Stripe redelivers the event later, so the ceiling shows as ticket numbers
-arriving late, never as tickets lost.
+**The Lambda quota needs checking before any launch.** A new account can start with a quota of ten
+concurrent executions shared by every function, and below a hundred the platform reserves nothing, so
+the reserved concurrency of one on the scheduled functions is not in effect either. Under such a quota,
+webhooks retrying through a throttle hold the same slots the checkout needs. Check Service Quotas the
+week before, not the morning of.
 
-Everything else clears fifty. `api` and `stripe-webhook` have no reserved concurrency and Lambda adds a
-thousand concurrent executions to a function every ten seconds. Stripe's live mode allows a hundred
-write requests a second. Browse traffic never reaches the table.
+**The counter is measured.** The stress test delivers `charge.succeeded` events straight to the webhook
+handler, skipping Stripe and the signature check, for one raffle:
+
+| Delivery                   | Allocated  | Answered 500 | Latency p50 |
+|----------------------------|------------|--------------|-------------|
+| 40 at once                 | 40 of 40   | 0            | 0.37 s      |
+| 80 at once                 | 80 of 80   | 0            | 0.71 s      |
+| 160 at once                | 100 of 160 | 60           | 1.7 s       |
+| 320 at once                | 91 of 320  | 229          | 3.3 s       |
+| 10 a second for 5 seconds  | 50 of 50   | 0            | 15 ms       |
+| 50 a second for 5 seconds  | 250 of 250 | 0            | 7 ms        |
+| 100 a second for 5 seconds | 500 of 500 | 0            | 5 ms        |
+
+The counter copes with any rate it can drain and fails on simultaneity. The ten jittered attempts cover
+roughly eighty webhooks arriving in the same instant; beyond that the losers exhaust their attempts, the
+webhook answers 500 and Stripe redelivers the event minutes later, while the confirmation page gives up
+after sixty seconds and asks the supporter to reload. Numbers arrive late, never lost. Real payments are
+spread by human checkout time, so a few hundred buyers a minute reach the webhook a few a second, well
+inside the budget, and the subscription charge run charges one subscriber at a time, so its webhooks
+arrive spaced.
 
 ### Reaching 200 paid orders a second
 
@@ -201,6 +239,9 @@ Four changes, none of them to the rows.
    twenty milliseconds a single order takes today, so one consumer allocates several hundred sales a
    second per raffle. The page keeps polling `GET /api/orders/{id}` exactly as now. This is the queue
    the spec names; it and the extra function cost pence at launch volume and nothing between raffles.
+   Record three things with it: a poison message blocks its group, so a dead-letter queue with a low
+   receive count is mandatory; the sold-out refund moves into the consumer; and 200 to Stripe then
+   means accepted, not allocated.
 2. **Give the table room.** Two hundred sales a second is around two thousand write units on the table
    and a thousand on each index. Rather than guess, switch the table to on-demand for the launch: it
    serves four thousand writes a second from the first minute and bills per request, so a quiet week
@@ -208,16 +249,40 @@ Four changes, none of them to the rows.
 3. **Ask Stripe for headroom.** Live mode allows a hundred write requests a second and every checkout
    is at least one, so two hundred sales a second is over the limit before a single subscriber signs
    up. Stripe raises the limit for a planned launch on request. Ask a couple of weeks ahead.
-4. **Check the account's Lambda concurrency.** A checkout spends most of its time waiting on Stripe,
+4. **Raise the account's Lambda concurrency.** A checkout spends most of its time waiting on Stripe,
    around a third of a second, so two hundred a second is sixty to eighty concurrent `api` executions
-   plus a handful for the webhook and the consumer. The default account quota of a thousand covers it
-   comfortably, but a new account can start far lower; check Service Quotas before the launch rather
-   than on the morning.
+   plus a handful for the webhook and the consumer. The default quota of a thousand covers it
+   comfortably, but a new account starts far lower; request the raise before the launch rather than on
+   the morning.
 
 Past two hundred the ledger itself is the next ceiling. Every ticket row of a raffle sits in the
 raffle's partition, and a partition writes a thousand units a second. DynamoDB splits a hot partition
 on its own, but not instantly, so a raffle expected to pass that rate wants its capacity raised the day
 before rather than the hour before.
+
+### A sharded counter, measured
+
+If a queue is refused, the counter can be split instead. `shared::shard` keeps eight `COUNTER#` rows
+per raffle, each owning an eighth of the licence cap; an order hashes to a home shard and moves to the
+next one when its own is full; the ledger key becomes `ENTRY#{shard}#{offset}`; and the draw still picks
+one uniform integer in 1 to N, where N is the sum of the eight counts frozen in the draw record, mapped
+to a shard and an offset by prefix sums. It is not wired into any function. Its contention test races
+paid orders on one raffle and counts the compare-and-set rounds lost, median of five runs, with the
+orders that exhausted their ten attempts:
+
+| Orders at once | One counter         | Eight shards |
+|----------------|---------------------|--------------|
+| 40             | 124, none exhausted | 50, none     |
+| 80             | 439, up to 3        | 151, none    |
+| 160            | 1,349, about half   | 562, none    |
+
+DynamoDB Local serialises every transaction through one lock, so the shards cannot commit in parallel
+there and the ratio understates the real service. What the shards buy is the exhaustion column. What
+they cost: eight contiguous runs instead of one, a shard-prefixed ticket label, a tail of at most eight
+times one less than the per-order maximum that can stay unsold at the cap, and, before a real run, a
+partition key per shard so the shards spread across partitions rather than sharing the raffle's. The
+queue keeps one gapless run and costs less to write, so it stays the first choice when launch money is
+being spent; the shards are the measured fallback.
 
 The other ceilings, the subscription charge run at a few thousand subscribers a raffle and the
 reconciliation's 48-hour window, are listed with their upgrade paths in the spec.

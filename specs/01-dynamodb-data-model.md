@@ -416,9 +416,14 @@ functions, the site, public URLs for `api` and `stripe-webhook`, the schedules, 
 
 ## Deliberate simplifications and their ceilings
 
-- **A compare-and-set counter instead of a single-writer queue.** Fine to roughly 50 paid orders per second on one
-  raffle. Past that, route payment events through a FIFO queue keyed by raffle so one consumer allocates per raffle, and
-  drop the retry loop.
+- **A compare-and-set counter instead of a single-writer queue.** Every paid order on a raffle is serialised on one
+  item. Measured against DynamoDB Local, the counter drains any paced rate it was offered, but its ten jittered attempts
+  cover about eighty webhooks arriving in the same instant; past that the losers answer 500 and Stripe redelivers them
+  minutes later. At the free 25 units the indexes throttle first, at about one sale a second sustained with a bank of
+  about three hundred. Past that, route payment events through a FIFO queue keyed by raffle so one consumer allocates
+  per raffle, and drop the retry loop. `shared::shard` is the measured no-queue alternative, eight counters per raffle
+  with a prefix-sum draw, not wired into any function; it strands at most eight times one less than the per-order
+  maximum at the cap and needs a partition key per shard before a real run.
 - **The subscription charge run calls Stripe one subscriber at a time inside one Lambda.** Fine to a few thousand
   subscribers per raffle. Because the run is resumable, larger lists finish over several hourly runs. Past that, fan out
   one queue message per subscription and let the consumer create the order and charge.

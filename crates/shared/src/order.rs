@@ -30,8 +30,8 @@ use crate::raffle::{Raffle, RaffleStatus, raffle_pk};
 use crate::subscription::Subscription;
 use crate::table::{DynamoRepo, GSI2, METADATA_SK, PageKey, condition_failed_as_false, item, n, partition, s, sort_ts};
 
-const ALLOCATION_ATTEMPTS: u32 = 10;
-const ALLOCATION_BACKOFF_STEP: Duration = Duration::from_millis(25);
+pub const ALLOCATION_ATTEMPTS: u32 = 10;
+pub(crate) const ALLOCATION_BACKOFF_STEP: Duration = Duration::from_millis(25);
 const RETRYABLE_CANCELLATIONS: [&str; 3] = ["TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded"];
 
 pub(crate) fn order_pk(order_id: &str) -> String {
@@ -233,16 +233,16 @@ pub enum Allocation {
 /// counter or ledger condition, a concurrent transaction or a throttle means the
 /// attempt made no progress and should back off, re-read and retry.
 #[derive(Debug, PartialEq, Eq)]
-enum AllocationConflict {
+pub(crate) enum AllocationConflict {
     OrderNotPending,
     Retryable,
 }
 
-fn jittered(cap: Duration) -> Duration {
+pub(crate) fn jittered(cap: Duration) -> Duration {
     cap.mul_f64(crate::random::u64() as f64 / u64::MAX as f64)
 }
 
-fn allocation_conflict(err: &AppError) -> Option<AllocationConflict> {
+pub(crate) fn allocation_conflict(err: &AppError) -> Option<AllocationConflict> {
     let AppError::Dynamo(dynamo_err) = err else {
         return None;
     };
@@ -408,7 +408,21 @@ impl DynamoRepo {
             .condition_expression("attribute_not_exists(PK)")
             .build()?;
 
-        let order_update = Update::builder()
+        let order_update = self.paid_order_update(order, payment, now)?;
+
+        self.client()
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(raffle_update).build())
+            .transact_items(TransactWriteItem::builder().put(entry_put).build())
+            .transact_items(TransactWriteItem::builder().update(order_update).build())
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    pub(crate) fn paid_order_update(&self, order: &Order, payment: &PaidPayment, now: DateTime<Utc>) -> Result<Update, AppError> {
+        Ok(Update::builder()
             .table_name(self.table())
             .key("PK", s(order_pk(&order.order_id)))
             .key("SK", s(METADATA_SK))
@@ -425,17 +439,7 @@ impl DynamoRepo {
             .expression_attribute_values(":funding", to_attribute_value(&payment.card_funding)?)
             .expression_attribute_values(":last4", to_attribute_value(&payment.card_last4)?)
             .expression_attribute_values(":gsi2pk", s(payment_intent_gsi2pk(&payment.payment_intent_id)))
-            .build()?;
-
-        self.client()
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(raffle_update).build())
-            .transact_items(TransactWriteItem::builder().put(entry_put).build())
-            .transact_items(TransactWriteItem::builder().update(order_update).build())
-            .send()
-            .await?;
-
-        Ok(())
+            .build()?)
     }
 
     /// Who holds ticket `N`: the last entry whose range starts at or before `N`,

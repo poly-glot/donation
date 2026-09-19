@@ -26,6 +26,7 @@ pub mod draw;
 pub mod entrant;
 pub mod order;
 pub mod raffle;
+pub mod shard;
 pub mod subscription;
 
 pub mod stripe;

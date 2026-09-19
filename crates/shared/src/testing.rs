@@ -1,5 +1,6 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::Client;
+use aws_sdk_dynamodb::client::Waiters;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, BillingMode, GlobalSecondaryIndex, KeySchemaElement, KeyType, Projection, ProjectionType, ScalarAttributeType,
 };
@@ -20,6 +21,13 @@ pub async fn local_repo(prefix: &str) -> Option<DynamoRepo> {
     let client = Client::new(&aws_config::load_defaults(BehaviorVersion::latest()).await);
     let table = format!("{prefix}-{}", crate::random::id("run"));
     create_table(&client, &table).await.expect("create table");
+    client
+        .wait_until_table_exists()
+        .table_name(&table)
+        .wait(std::time::Duration::from_secs(120))
+        .await
+        .expect("table active");
+
     Some(DynamoRepo::new(client, table))
 }
 
