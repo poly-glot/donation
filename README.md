@@ -226,6 +226,34 @@ spread by human checkout time, so a few hundred buyers a minute reach the webhoo
 inside the budget, and the subscription charge run charges one subscriber at a time, so its webhooks
 arrive spaced.
 
+**The deployment is measured too.** The same test file drives a deployment's public checkout end to
+end when `STRESS_BASE_URL` names it: each sale is a real `POST /api/raffles/{id}/orders`, a real Stripe
+test-mode confirmation with the Visa debit test card, and a poll of `GET /api/orders/{id}` every two
+seconds until the tickets appear, the way the confirmation page does. Stripe's test mode allows 25
+requests a second and a sale costs two, one from the checkout and one from the confirmation, so the
+offered rate tops out near ten sales a second; live mode allows four times that. Measured on
+`donation.junaid.guru` at the free 25 units, 140 sales in three runs, every one allocated:
+
+| Offered            | Checkout p50 | Stripe confirm p50 | Tickets visible p50 | p95   | Failures |
+|--------------------|--------------|--------------------|---------------------|-------|----------|
+| 20 at 2 a second   | 0.28 s       | 0.77 s             | 2.1 s               | 2.4 s | none     |
+| 40 at 5 a second   | 0.27 s       | 0.71 s             | 2.1 s               | 2.3 s | none     |
+| 80 at 10 a second  | 0.28 s       | 0.71 s             | 4.2 s               | 6.5 s | none     |
+
+Tickets visible is measured from Stripe's confirmation and includes Stripe's webhook delivery, the
+allocation and the two-second poll, so two seconds means the first poll found them. At ten sales a
+second the median doubled and the tail reached six and a half seconds: Stripe delivering the webhooks in
+parallel, the allocator's lost rounds on the real service, and cold starts of extra webhook
+environments all land in that window, and the run was too short to exhaust the capacity bank. Nothing
+failed and nothing was redelivered.
+
+```bash
+STRESS_BASE_URL=https://donation.junaid.guru cargo test -p stripe-webhook --test stress -- --ignored --nocapture checkout_throughput
+```
+
+Each run leaves its sales in the raffle: a synthetic entrant per sale, one £1 ticket each, paid with a
+test card, so run it against a demo raffle only.
+
 ### Reaching 200 paid orders a second
 
 Four changes, none of them to the rows.

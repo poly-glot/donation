@@ -24,4 +24,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+reqwest = { workspace = true }
 shared = { path = "../../crates/shared", features = ["testing"] }
