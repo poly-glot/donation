@@ -107,11 +107,9 @@ impl DynamoRepo {
 
         let mut counters: Vec<Counter> = self.batch_get(keys, true).await?;
         if counters.len() != shards as usize {
-            return Err(AppError::Internal(format!(
-                "raffle {} has {} of {shards} counters",
-                raffle.raffle_id,
-                counters.len()
-            )));
+            return Err(AppError::Internal(
+                format!("raffle {} has {} of {shards} counters", raffle.raffle_id, counters.len()).into(),
+            ));
         }
         counters.sort_by_key(|counter| counter.shard);
 
