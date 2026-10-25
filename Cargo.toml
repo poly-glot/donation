@@ -12,6 +12,7 @@ members = [
 ]
 
 [workspace.dependencies]
+anyhow = "1"
 aws-config = "1"
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 aws-sdk-dynamodb = "1"

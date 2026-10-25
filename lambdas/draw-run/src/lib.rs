@@ -110,7 +110,7 @@ pub async fn run(repo: &DynamoRepo, request: DrawRequest, mut random: impl FnMut
         DrawState::Resume => repo
             .get_draw(&raffle.raffle_id)
             .await?
-            .ok_or_else(|| AppError::Internal(format!("raffle {} is drawn without a draw record", raffle.raffle_id).into()))?,
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("raffle {} is drawn without a draw record", raffle.raffle_id)))?,
     };
 
     let mut winners = repo.list_winners(&raffle.raffle_id).await?;
@@ -205,7 +205,7 @@ async fn pick_entry(repo: &DynamoRepo, draw: &Draw, random: &mut impl FnMut() ->
         }
     }
 
-    Err(AppError::Internal(format!("no eligible ticket after {MAX_REDRAWS_PER_PRIZE} draws").into()))
+    Err(AppError::Internal(anyhow::anyhow!("no eligible ticket after {MAX_REDRAWS_PER_PRIZE} draws")))
 }
 
 #[cfg(test)]

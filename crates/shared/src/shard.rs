@@ -1,5 +1,6 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -107,9 +108,11 @@ impl DynamoRepo {
 
         let mut counters: Vec<Counter> = self.batch_get(keys, true).await?;
         if counters.len() != shards as usize {
-            return Err(AppError::Internal(
-                format!("raffle {} has {} of {shards} counters", raffle.raffle_id, counters.len()).into(),
-            ));
+            return Err(AppError::Internal(anyhow!(
+                "raffle {} has {} of {shards} counters",
+                raffle.raffle_id,
+                counters.len()
+            )));
         }
         counters.sort_by_key(|counter| counter.shard);
 

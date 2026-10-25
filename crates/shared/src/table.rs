@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use anyhow::{Context, anyhow};
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes};
@@ -82,12 +83,12 @@ pub fn page_cursor(key: &PageKey) -> Result<String, AppError> {
 
     for (name, value) in key {
         let AttributeValue::S(text) = value else {
-            return Err(AppError::Internal(format!("page key {name} is not a string").into()));
+            return Err(AppError::Internal(anyhow!("page key {name} is not a string")));
         };
         attributes.insert(name.as_str(), text.as_str());
     }
 
-    serde_json::to_string(&attributes).map_err(|err| AppError::Internal(err.into()))
+    Ok(serde_json::to_string(&attributes).context("failed to encode page cursor")?)
 }
 
 pub fn page_key(cursor: &str) -> Result<PageKey, AppError> {

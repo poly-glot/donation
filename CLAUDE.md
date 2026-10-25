@@ -77,6 +77,9 @@ These hold on every change, whatever the task.
 - DynamoDB errors convert via `From` into `AppError::Dynamo` and Stripe errors into
   `AppError::Payment`. Never stringify them early: the HTTP mapping, `public_message` and
   `is_condition_failed` all need the typed error.
+- `Internal` wraps `anyhow::Error`: `anyhow!` for a plain message, `.context("what was attempted")?`
+  when a source error exists, so the chain reaches `refused`, which logs every `source()` as
+  `causes`. Context names the operation, never the failure the source already describes.
 - Guards return early with the specific variant — `BadRequest` for input, `Forbidden` for licence
   rules, `Conflict` for state, `NotFound` for absent rows — and `let … else` reads the absent row.
 - Conditional writes return `Result<bool, AppError>` through `condition_failed_as_false`; `false`

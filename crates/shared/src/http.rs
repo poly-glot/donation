@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use chrono::{DateTime, Utc};
 use lambda_http::http::Method;
 use lambda_http::http::header::{AUTHORIZATION, CACHE_CONTROL, HeaderValue};
@@ -31,10 +33,14 @@ pub fn answered<T: Serialize>(result: Result<T, AppError>) -> Response<Body> {
 
 pub fn refused(err: &AppError) -> Response<Body> {
     let status = err.status_code();
+    let causes: Vec<String> = std::iter::successors(err.source(), |cause| Error::source(*cause))
+        .map(ToString::to_string)
+        .collect();
+
     if status >= 500 {
-        tracing::error!(status, error = %err, "request failed");
+        tracing::error!(status, error = %err, ?causes, "request failed");
     } else {
-        tracing::warn!(status, error = %err, "request rejected");
+        tracing::warn!(status, error = %err, ?causes, "request rejected");
     }
 
     json(status, &json!({ "error": err.public_message() }))
