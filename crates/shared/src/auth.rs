@@ -79,7 +79,7 @@ impl Cognito {
     }
 
     pub fn from_env() -> Result<Self, AppError> {
-        let named = |name: &str| std::env::var(name).map_err(|_| AppError::Internal(format!("{name} is not set")));
+        let named = |name: &str| std::env::var(name).map_err(|_| AppError::Internal(format!("{name} is not set").into()));
         let issuer = named("COGNITO_ISSUER")?;
         let jwks_url = std::env::var("COGNITO_JWKS_URL").unwrap_or_else(|_| format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/')));
 
@@ -141,7 +141,7 @@ impl Cognito {
     }
 
     async fn refresh(&self) -> Result<(), AppError> {
-        let unreachable = |err: reqwest::Error| AppError::Internal(format!("JWKS fetch failed: {err}"));
+        let unreachable = |err: reqwest::Error| AppError::Internal(format!("JWKS fetch failed: {err}").into());
         let body = self
             .http
             .get(&self.jwks_url)
@@ -151,7 +151,7 @@ impl Cognito {
             .text()
             .await
             .map_err(unreachable)?;
-        let jwks: Jwks = serde_json::from_str(&body).map_err(|err| AppError::Internal(format!("JWKS is not the expected JSON: {err}")))?;
+        let jwks: Jwks = serde_json::from_str(&body).map_err(|err| AppError::Internal(format!("JWKS is not the expected JSON: {err}").into()))?;
 
         let mut fetched = HashMap::new();
         for key in jwks.keys {

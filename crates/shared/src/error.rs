@@ -7,26 +7,26 @@ pub(crate) const CONDITIONAL_CHECK_FAILED: &str = "ConditionalCheckFailed";
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("Bad request: {0}")]
+    #[error("bad request: {0}")]
     BadRequest(String),
 
-    #[error("Conflict: {0}")]
+    #[error("conflict: {0}")]
     Conflict(String),
 
-    #[error("DynamoDB error: {0}")]
-    Dynamo(Box<aws_sdk_dynamodb::Error>),
+    #[error("dynamodb operation failed")]
+    Dynamo(#[source] Box<aws_sdk_dynamodb::Error>),
 
-    #[error("Forbidden: {0}")]
+    #[error("forbidden: {0}")]
     Forbidden(String),
 
-    #[error("Internal error: {0}")]
-    Internal(String),
+    #[error("internal error")]
+    Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
 
-    #[error("Not found: {0}")]
+    #[error("not found: {0}")]
     NotFound(String),
 
-    #[error("Payment provider error: {0}")]
-    Payment(String),
+    #[error("payment provider request failed")]
+    Payment(#[source] StripeError),
 }
 
 impl AppError {
@@ -81,19 +81,19 @@ where
 
 impl From<BuildError> for AppError {
     fn from(err: BuildError) -> Self {
-        Self::Internal(err.to_string())
+        Self::Internal(Box::new(err))
     }
 }
 
 impl From<serde_dynamo::Error> for AppError {
     fn from(err: serde_dynamo::Error) -> Self {
-        Self::Internal(err.to_string())
+        Self::Internal(Box::new(err))
     }
 }
 
 impl From<StripeError> for AppError {
     fn from(err: StripeError) -> Self {
-        Self::Payment(err.to_string())
+        Self::Payment(err)
     }
 }
 
@@ -106,6 +106,13 @@ mod tests {
 
     fn dynamo(err: aws_sdk_dynamodb::Error) -> AppError {
         AppError::from(err)
+    }
+
+    fn stripe_api(message: &str) -> StripeError {
+        StripeError::Api {
+            status: 502,
+            message: message.into(),
+        }
     }
 
     fn condition_failed() -> aws_sdk_dynamodb::Error {
@@ -133,7 +140,7 @@ mod tests {
             (AppError::Conflict("x".into()), 409),
             (AppError::Internal("x".into()), 500),
             (dynamo(not_found()), 500),
-            (AppError::Payment("x".into()), 502),
+            (AppError::Payment(stripe_api("x")), 502),
         ];
         for (error, expected) in cases {
             assert_eq!(error.status_code(), expected, "{error}");
@@ -145,12 +152,12 @@ mod tests {
         // Server-side faults are redacted; client-facing errors keep their text.
         assert_eq!(dynamo(not_found()).public_message(), "internal error");
         assert_eq!(AppError::Internal("secret".into()).public_message(), "internal error");
-        assert_eq!(AppError::Payment("stripe down".into()).public_message(), "payment provider unavailable");
+        assert_eq!(AppError::Payment(stripe_api("stripe down")).public_message(), "payment provider unavailable");
         assert_eq!(
             AppError::BadRequest("email is invalid".into()).public_message(),
-            "Bad request: email is invalid"
+            "bad request: email is invalid"
         );
-        assert_eq!(AppError::NotFound("raffle x".into()).public_message(), "Not found: raffle x");
+        assert_eq!(AppError::NotFound("raffle x".into()).public_message(), "not found: raffle x");
     }
 
     #[test]

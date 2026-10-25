@@ -91,7 +91,7 @@ pub enum ChargeOutcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StripeError {
-    #[error("stripe request failed: {0}")]
+    #[error("stripe request failed")]
     Transport(#[from] reqwest::Error),
 
     #[error("stripe api error {status}: {message}")]

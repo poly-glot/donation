@@ -82,12 +82,12 @@ pub fn page_cursor(key: &PageKey) -> Result<String, AppError> {
 
     for (name, value) in key {
         let AttributeValue::S(text) = value else {
-            return Err(AppError::Internal(format!("page key {name} is not a string")));
+            return Err(AppError::Internal(format!("page key {name} is not a string").into()));
         };
         attributes.insert(name.as_str(), text.as_str());
     }
 
-    serde_json::to_string(&attributes).map_err(|err| AppError::Internal(err.to_string()))
+    serde_json::to_string(&attributes).map_err(|err| AppError::Internal(err.into()))
 }
 
 pub fn page_key(cursor: &str) -> Result<PageKey, AppError> {
