@@ -1,4 +1,4 @@
-pub fn bytes<const N: usize>() -> [u8; N] {
+fn bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
     getrandom::fill(&mut bytes).expect("operating system entropy");
     bytes
@@ -12,7 +12,7 @@ pub fn id(prefix: &str) -> String {
     format!("{prefix}_{}", hex::encode(bytes::<12>()))
 }
 
-pub fn jittered(cap: std::time::Duration) -> std::time::Duration {
+pub(crate) fn jittered(cap: std::time::Duration) -> std::time::Duration {
     cap.mul_f64(u64() as f64 / u64::MAX as f64)
 }
 

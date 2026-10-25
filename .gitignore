@@ -4,3 +4,4 @@ target/
 .idea/
 frontend/config.js
 .stripe-listen.log
+.claude/settings.local.json

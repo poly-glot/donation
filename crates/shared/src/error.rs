@@ -20,7 +20,7 @@ pub enum AppError {
     Forbidden(String),
 
     #[error("internal error")]
-    Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Internal(#[from] anyhow::Error),
 
     #[error("not found: {0}")]
     NotFound(String),
@@ -81,13 +81,13 @@ where
 
 impl From<BuildError> for AppError {
     fn from(err: BuildError) -> Self {
-        Self::Internal(Box::new(err))
+        Self::Internal(err.into())
     }
 }
 
 impl From<serde_dynamo::Error> for AppError {
     fn from(err: serde_dynamo::Error) -> Self {
-        Self::Internal(Box::new(err))
+        Self::Internal(err.into())
     }
 }
 
@@ -138,7 +138,7 @@ mod tests {
             (AppError::Forbidden("x".into()), 403),
             (AppError::NotFound("x".into()), 404),
             (AppError::Conflict("x".into()), 409),
-            (AppError::Internal("x".into()), 500),
+            (AppError::Internal(anyhow::anyhow!("x")), 500),
             (dynamo(not_found()), 500),
             (AppError::Payment(stripe_api("x")), 502),
         ];
@@ -151,7 +151,7 @@ mod tests {
     fn public_message_hides_internals_but_passes_client_errors_through() {
         // Server-side faults are redacted; client-facing errors keep their text.
         assert_eq!(dynamo(not_found()).public_message(), "internal error");
-        assert_eq!(AppError::Internal("secret".into()).public_message(), "internal error");
+        assert_eq!(AppError::Internal(anyhow::anyhow!("secret")).public_message(), "internal error");
         assert_eq!(AppError::Payment(stripe_api("stripe down")).public_message(), "payment provider unavailable");
         assert_eq!(
             AppError::BadRequest("email is invalid".into()).public_message(),

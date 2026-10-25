@@ -32,7 +32,7 @@ const ADULT_AGE_MONTHS: u32 = 18 * 12;
 const NON_GB_POSTCODE_AREAS: [&str; 4] = ["BT", "GY", "IM", "JE"];
 
 /// The sort key of the profile row, and its own `GSI1SK` on the email index.
-pub(crate) const PROFILE_SK: &str = "#PROFILE";
+const PROFILE_SK: &str = "#PROFILE";
 
 pub(crate) fn entrant_pk(entrant_id: &str) -> String {
     partition("ENTRANT", entrant_id)
@@ -92,7 +92,7 @@ impl Address {
 /// A server-side sanity check, not a full validator: it accepts a plausible UK
 /// postcode and rejects the non-GB areas outright, so a bypassed client can never
 /// slip through even though the checkout's address lookup does the real work.
-pub(crate) fn is_great_britain_postcode(postcode: &str) -> bool {
+fn is_great_britain_postcode(postcode: &str) -> bool {
     let normalized: String = postcode.chars().filter(|c| !c.is_whitespace()).map(|c| c.to_ascii_uppercase()).collect();
 
     let area: String = normalized.chars().take_while(char::is_ascii_alphabetic).collect();
@@ -104,7 +104,7 @@ pub(crate) fn is_great_britain_postcode(postcode: &str) -> bool {
 /// True once the 18th birthday is on or before today — the exact-birthday rule
 /// the Gambling Commission expects, computed by adding 18 years rather than
 /// dividing days so leap years never round the wrong way.
-pub(crate) fn is_adult(date_of_birth: NaiveDate, today: NaiveDate) -> bool {
+fn is_adult(date_of_birth: NaiveDate, today: NaiveDate) -> bool {
     date_of_birth
         .checked_add_months(Months::new(ADULT_AGE_MONTHS))
         .is_some_and(|eighteenth_birthday| eighteenth_birthday <= today)

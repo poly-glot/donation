@@ -23,7 +23,7 @@ use crate::table::{DynamoRepo, GSI2, METADATA_SK, PageKey, condition_failed_as_f
 /// Every subscription buys the same number of tickets per raffle.
 pub const TICKETS_PER_SUBSCRIPTION: u32 = 10;
 
-pub(crate) fn subscription_pk(subscription_id: &str) -> String {
+fn subscription_pk(subscription_id: &str) -> String {
     partition("SUB", subscription_id)
 }
 

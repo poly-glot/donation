@@ -12,6 +12,7 @@ name = "draw-run"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = { workspace = true }
 chrono = { workspace = true }
 lambda_http = { workspace = true }
 serde = { workspace = true }

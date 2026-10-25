@@ -34,12 +34,12 @@ pub struct DrawReport {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum DrawState {
+enum DrawState {
     Fresh,
     Resume,
 }
 
-pub fn uniform(mut random: impl FnMut() -> u64, upper: u64) -> u64 {
+fn uniform(mut random: impl FnMut() -> u64, upper: u64) -> u64 {
     let zone = u64::MAX - u64::MAX % upper;
     loop {
         let sample = random();
@@ -49,7 +49,7 @@ pub fn uniform(mut random: impl FnMut() -> u64, upper: u64) -> u64 {
     }
 }
 
-pub fn prize_slots(prizes: &[Prize]) -> Vec<&Prize> {
+fn prize_slots(prizes: &[Prize]) -> Vec<&Prize> {
     let mut by_rank: Vec<&Prize> = prizes.iter().collect();
     by_rank.sort_by_key(|prize| prize.rank);
     by_rank
@@ -58,7 +58,7 @@ pub fn prize_slots(prizes: &[Prize]) -> Vec<&Prize> {
         .collect()
 }
 
-pub fn draw_state(raffle: &Raffle, now: DateTime<Utc>) -> Result<DrawState, AppError> {
+fn draw_state(raffle: &Raffle, now: DateTime<Utc>) -> Result<DrawState, AppError> {
     match raffle.status_at(now) {
         RaffleStatus::Drawn => Ok(DrawState::Resume),
         RaffleStatus::Closed if now < raffle.draw_at => Err(AppError::Conflict("draw date not reached".into())),
@@ -110,7 +110,7 @@ pub async fn run(repo: &DynamoRepo, request: DrawRequest, mut random: impl FnMut
         DrawState::Resume => repo
             .get_draw(&raffle.raffle_id)
             .await?
-            .ok_or_else(|| AppError::Internal(format!("raffle {} is drawn without a draw record", raffle.raffle_id).into()))?,
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("raffle {} is drawn without a draw record", raffle.raffle_id)))?,
     };
 
     let mut winners = repo.list_winners(&raffle.raffle_id).await?;
@@ -205,7 +205,7 @@ async fn pick_entry(repo: &DynamoRepo, draw: &Draw, random: &mut impl FnMut() ->
         }
     }
 
-    Err(AppError::Internal(format!("no eligible ticket after {MAX_REDRAWS_PER_PRIZE} draws").into()))
+    Err(AppError::Internal(anyhow::anyhow!("no eligible ticket after {MAX_REDRAWS_PER_PRIZE} draws")))
 }
 
 #[cfg(test)]

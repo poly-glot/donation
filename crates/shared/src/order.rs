@@ -33,10 +33,10 @@ use crate::subscription::Subscription;
 use crate::table::{DynamoRepo, GSI2, METADATA_SK, PageKey, condition_failed_as_false, item, n, partition, s, sort_ts};
 
 pub const ALLOCATION_ATTEMPTS: u32 = 10;
-pub(crate) const ALLOCATION_BACKOFF_STEP: Duration = Duration::from_millis(25);
+const ALLOCATION_BACKOFF_STEP: Duration = Duration::from_millis(25);
 const RETRYABLE_CANCELLATIONS: [&str; 3] = ["TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded"];
 
-pub(crate) fn order_pk(order_id: &str) -> String {
+fn order_pk(order_id: &str) -> String {
     partition("ORDER", order_id)
 }
 
@@ -64,7 +64,7 @@ fn entrant_entry_gsi1sk(raffle_id: &str, shard: Option<u32>, ticket_from: u64) -
 
 /// The order's `GSI2PK`, present once a PaymentIntent exists, so the webhook can
 /// find the order Stripe is telling us about by its payment id.
-pub(crate) fn payment_intent_gsi2pk(payment_intent_id: &str) -> String {
+fn payment_intent_gsi2pk(payment_intent_id: &str) -> String {
     partition("PI", payment_intent_id)
 }
 
@@ -230,11 +230,11 @@ impl Entry {
 
 /// The next range for a purchase of `ticket_quantity`, given how many tickets the
 /// raffle had already sold. Ranges are 1-based and butt exactly against each other.
-pub(crate) fn ticket_range(tickets_sold_before: u64, ticket_quantity: u32) -> (u64, u64) {
+fn ticket_range(tickets_sold_before: u64, ticket_quantity: u32) -> (u64, u64) {
     (tickets_sold_before + 1, tickets_sold_before + u64::from(ticket_quantity))
 }
 
-pub(crate) struct Run {
+struct Run {
     shard: Option<u32>,
     sold: u64,
 }
@@ -252,12 +252,12 @@ pub enum Allocation {
 /// counter or ledger condition, a concurrent transaction or a throttle means the
 /// attempt made no progress and should back off, re-read and retry.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum AllocationConflict {
+enum AllocationConflict {
     OrderNotPending,
     Retryable,
 }
 
-pub(crate) fn allocation_conflict(err: &AppError) -> Option<AllocationConflict> {
+fn allocation_conflict(err: &AppError) -> Option<AllocationConflict> {
     let AppError::Dynamo(dynamo_err) = err else {
         return None;
     };
@@ -463,7 +463,7 @@ impl DynamoRepo {
             .build()?)
     }
 
-    pub(crate) fn paid_order_update(&self, order: &Order, payment: &PaidPayment, now: DateTime<Utc>) -> Result<Update, AppError> {
+    fn paid_order_update(&self, order: &Order, payment: &PaidPayment, now: DateTime<Utc>) -> Result<Update, AppError> {
         Ok(Update::builder()
             .table_name(self.table())
             .key("PK", s(order_pk(&order.order_id)))
@@ -512,6 +512,12 @@ impl DynamoRepo {
 
     pub async fn list_entries_for_entrant(&self, entrant_id: &str) -> Result<Vec<Entry>, AppError> {
         self.query_entrant_index(entrant_id, "ENTRY#").await?.all()
+    }
+
+    pub async fn entry_for_order(&self, order: &Order) -> Result<Option<Entry>, AppError> {
+        let entries = self.list_entries_for_entrant(&order.entrant_id).await?;
+
+        Ok(entries.into_iter().find(|entry| entry.order_id == order.order_id))
     }
 
     pub async fn list_entries(

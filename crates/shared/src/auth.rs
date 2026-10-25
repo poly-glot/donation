@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use anyhow::{Context, anyhow};
 use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -79,7 +80,7 @@ impl Cognito {
     }
 
     pub fn from_env() -> Result<Self, AppError> {
-        let named = |name: &str| std::env::var(name).map_err(|_| AppError::Internal(format!("{name} is not set").into()));
+        let named = |name: &str| std::env::var(name).map_err(|_| AppError::Internal(anyhow!("{name} is not set")));
         let issuer = named("COGNITO_ISSUER")?;
         let jwks_url = std::env::var("COGNITO_JWKS_URL").unwrap_or_else(|_| format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/')));
 
@@ -141,24 +142,16 @@ impl Cognito {
     }
 
     async fn refresh(&self) -> Result<(), AppError> {
-        let unreachable = |err: reqwest::Error| AppError::Internal(format!("JWKS fetch failed: {err}").into());
-        let body = self
-            .http
-            .get(&self.jwks_url)
-            .send()
-            .await
-            .map_err(unreachable)?
-            .text()
-            .await
-            .map_err(unreachable)?;
-        let jwks: Jwks = serde_json::from_str(&body).map_err(|err| AppError::Internal(format!("JWKS is not the expected JSON: {err}").into()))?;
+        let response = self.http.get(&self.jwks_url).send().await.context("failed to fetch JWKS")?;
+        let body = response.text().await.context("failed to read JWKS")?;
+        let jwks: Jwks = serde_json::from_str(&body).context("failed to parse JWKS")?;
 
         let mut fetched = HashMap::new();
         for key in jwks.keys {
             fetched.insert(key.kid, decode(&key.n)?);
         }
 
-        let mut keys = self.keys.write().map_err(|_| AppError::Internal("the JWKS cache is poisoned".into()))?;
+        let mut keys = self.keys.write().map_err(|_| AppError::Internal(anyhow!("the JWKS cache is poisoned")))?;
         *keys = fetched;
         Ok(())
     }

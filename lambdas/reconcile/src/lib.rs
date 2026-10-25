@@ -41,15 +41,15 @@ pub struct Report {
     pub violations: Vec<Violation>,
 }
 
-pub fn is_live(raffle: &Raffle, now: DateTime<Utc>) -> bool {
+fn is_live(raffle: &Raffle, now: DateTime<Utc>) -> bool {
     raffle.drawn_at.is_none_or(|drawn_at| now - drawn_at < Duration::days(RECENT_DRAW_DAYS))
 }
 
-pub fn subscriptions_due_by_now(raffle: &Raffle, now: DateTime<Utc>) -> bool {
+fn subscriptions_due_by_now(raffle: &Raffle, now: DateTime<Utc>) -> bool {
     raffle.status_at(now) == RaffleStatus::Open && now - raffle.opens_at >= Duration::hours(SUBSCRIPTION_GRACE_HOURS)
 }
 
-pub fn raffle_violations(raffle: &Raffle) -> Vec<Violation> {
+fn raffle_violations(raffle: &Raffle) -> Vec<Violation> {
     let mut found = Vec::new();
 
     let expected_revenue = raffle.tickets_sold * raffle.ticket_price_pence;
@@ -70,27 +70,16 @@ pub fn raffle_violations(raffle: &Raffle) -> Vec<Violation> {
     found
 }
 
-#[derive(Debug)]
-pub struct LedgerWalk {
-    next_ticket: u64,
+#[derive(Debug, Default)]
+struct LedgerWalk {
     last_ticket: u64,
 }
 
-impl Default for LedgerWalk {
-    fn default() -> Self {
-        Self {
-            next_ticket: 1,
-            last_ticket: 0,
-        }
-    }
-}
-
 impl LedgerWalk {
-    pub fn step(&mut self, entry: &Entry) -> Option<Violation> {
-        let contiguous = entry.ticket_from == self.next_ticket && entry.ticket_to >= entry.ticket_from;
-        let expected = self.next_ticket;
+    fn step(&mut self, entry: &Entry) -> Option<Violation> {
+        let expected = self.last_ticket + 1;
+        let contiguous = entry.ticket_from == expected && entry.ticket_to >= entry.ticket_from;
         self.last_ticket = entry.ticket_to;
-        self.next_ticket = entry.ticket_to + 1;
 
         if contiguous {
             return None;
@@ -103,7 +92,7 @@ impl LedgerWalk {
         ))
     }
 
-    pub fn finish(&self, raffle: &Raffle, run: Option<u32>, sold: u64, now: DateTime<Utc>) -> Option<Violation> {
+    fn finish(&self, raffle: &Raffle, run: Option<u32>, sold: u64, now: DateTime<Utc>) -> Option<Violation> {
         let subject = match run {
             None => raffle.raffle_id.clone(),
             Some(shard) => format!("{}#{shard:02}", raffle.raffle_id),
@@ -127,7 +116,7 @@ fn entry_order_violation(entry: &Entry, order: Option<&Order>) -> Option<Violati
     }
 }
 
-pub fn charge_violation(charge: &Charge, order: Option<&Order>) -> Option<Violation> {
+fn charge_violation(charge: &Charge, order: Option<&Order>) -> Option<Violation> {
     if charge.status != SUCCEEDED {
         return None;
     }
