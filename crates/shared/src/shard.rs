@@ -52,7 +52,7 @@ pub fn shard_of(order_id: &str, shards: u32) -> u32 {
     (hasher.finish() % u64::from(shards)) as u32
 }
 
-pub fn caps(max_tickets: u64, shards: u32) -> Vec<u64> {
+fn caps(max_tickets: u64, shards: u32) -> Vec<u64> {
     let shards = u64::from(shards);
     let base = max_tickets / shards;
     let remainder = max_tickets % shards;

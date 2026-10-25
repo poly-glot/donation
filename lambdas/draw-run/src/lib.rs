@@ -34,12 +34,12 @@ pub struct DrawReport {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum DrawState {
+enum DrawState {
     Fresh,
     Resume,
 }
 
-pub fn uniform(mut random: impl FnMut() -> u64, upper: u64) -> u64 {
+fn uniform(mut random: impl FnMut() -> u64, upper: u64) -> u64 {
     let zone = u64::MAX - u64::MAX % upper;
     loop {
         let sample = random();
@@ -49,7 +49,7 @@ pub fn uniform(mut random: impl FnMut() -> u64, upper: u64) -> u64 {
     }
 }
 
-pub fn prize_slots(prizes: &[Prize]) -> Vec<&Prize> {
+fn prize_slots(prizes: &[Prize]) -> Vec<&Prize> {
     let mut by_rank: Vec<&Prize> = prizes.iter().collect();
     by_rank.sort_by_key(|prize| prize.rank);
     by_rank
@@ -58,7 +58,7 @@ pub fn prize_slots(prizes: &[Prize]) -> Vec<&Prize> {
         .collect()
 }
 
-pub fn draw_state(raffle: &Raffle, now: DateTime<Utc>) -> Result<DrawState, AppError> {
+fn draw_state(raffle: &Raffle, now: DateTime<Utc>) -> Result<DrawState, AppError> {
     match raffle.status_at(now) {
         RaffleStatus::Drawn => Ok(DrawState::Resume),
         RaffleStatus::Closed if now < raffle.draw_at => Err(AppError::Conflict("draw date not reached".into())),

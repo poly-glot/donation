@@ -290,11 +290,7 @@ async fn get_order(repo: &DynamoRepo, order_id: &str) -> Result<Value, AppError>
     let Some(order) = repo.get_order(order_id).await? else {
         return Err(AppError::NotFound(format!("order {order_id}")));
     };
-    let entry = repo
-        .list_entries_for_entrant(&order.entrant_id)
-        .await?
-        .into_iter()
-        .find(|entry| entry.order_id == order.order_id);
+    let entry = repo.entry_for_order(&order).await?;
 
     order_detail(repo, order, entry).await
 }

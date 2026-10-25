@@ -194,15 +194,13 @@ impl<G: PaymentGateway> Api<G> {
             return Err(AppError::NotFound(format!("order {order_id}")));
         };
 
-        let tickets = if matches!(order.status, OrderStatus::Paid | OrderStatus::Refunded) {
-            let entries = self.repo.list_entries_for_entrant(&order.entrant_id).await?;
-            entries.into_iter().find(|entry| entry.order_id == order.order_id).map(|entry| TicketRange {
+        let tickets = match order.status {
+            OrderStatus::Paid | OrderStatus::Refunded => self.repo.entry_for_order(&order).await?.map(|entry| TicketRange {
                 shard: entry.shard,
                 from: entry.ticket_from,
                 to: entry.ticket_to,
-            })
-        } else {
-            None
+            }),
+            _ => None,
         };
 
         Ok(OrderView {

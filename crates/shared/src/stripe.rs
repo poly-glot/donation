@@ -12,7 +12,7 @@ const CARD_ERROR: &str = "card_error";
 const UNSUPPORTED: u16 = 0;
 const CHARGE_PAGE_SIZE: u32 = 100;
 
-pub(crate) type Form = Vec<(String, String)>;
+type Form = Vec<(String, String)>;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 pub struct OrderMetadata {
@@ -158,7 +158,7 @@ struct ApiError {
     payment_intent: Option<Id>,
 }
 
-pub(crate) fn parse_ok<T: DeserializeOwned>(status: u16, body: &str) -> Result<T, StripeError> {
+fn parse_ok<T: DeserializeOwned>(status: u16, body: &str) -> Result<T, StripeError> {
     if !(200..300).contains(&status) {
         let message = serde_json::from_str::<ErrorResponse>(body)
             .ok()
@@ -172,7 +172,7 @@ pub(crate) fn parse_ok<T: DeserializeOwned>(status: u16, body: &str) -> Result<T
     })
 }
 
-pub(crate) fn classify_charge(status: u16, body: &str) -> Result<ChargeOutcome, StripeError> {
+fn classify_charge(status: u16, body: &str) -> Result<ChargeOutcome, StripeError> {
     let unreadable = |err: serde_json::Error| StripeError::Api {
         status,
         message: format!("unreadable response: {err}"),
@@ -212,7 +212,7 @@ fn with_metadata(mut form: Form, metadata: &[(String, String)]) -> Form {
     form
 }
 
-pub(crate) fn payment_intent_form(request: &PaymentIntentRequest) -> Form {
+fn payment_intent_form(request: &PaymentIntentRequest) -> Form {
     let mut form = vec![
         ("amount".to_string(), request.amount_pence.to_string()),
         ("currency".to_string(), CURRENCY.to_string()),
@@ -228,7 +228,7 @@ pub(crate) fn payment_intent_form(request: &PaymentIntentRequest) -> Form {
     with_metadata(form, &request.metadata)
 }
 
-pub(crate) fn off_session_form(charge: &OffSessionCharge) -> Form {
+fn off_session_form(charge: &OffSessionCharge) -> Form {
     let form = vec![
         ("amount".to_string(), charge.amount_pence.to_string()),
         ("currency".to_string(), CURRENCY.to_string()),
